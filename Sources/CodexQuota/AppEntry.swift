@@ -21,6 +21,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.updateStatusTitle() }
         }
+        // 偏好设置（菜单栏数据源）改变时立即刷新标题
+        NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.updateStatusTitle() }
+        }
         updateStatusTitle()
     }
 
@@ -49,12 +57,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusItem?.button?.title = " --"
             return
         }
-        let candidates: [RateWindow] = [snap.limits.primary, snap.limits.secondary].compactMap { $0 }
-        guard let tightest = candidates.min(by: { $0.remainingPercent < $1.remainingPercent }) else {
+        let source = MenuBarSource(
+            rawValue: UserDefaults.standard.string(forKey: MenuBarSource.storageKey) ?? ""
+        ) ?? .auto
+        let chosen: RateWindow?
+        switch source {
+        case .primary:
+            chosen = snap.limits.primary
+        case .secondary:
+            chosen = snap.limits.secondary
+        case .auto:
+            let candidates = [snap.limits.primary, snap.limits.secondary].compactMap { $0 }
+            chosen = candidates.min(by: { $0.remainingPercent < $1.remainingPercent })
+        }
+        guard let w = chosen else {
             statusItem?.button?.title = " --"
             return
         }
-        statusItem?.button?.title = " \(Int(tightest.remainingPercent.rounded()))%"
+        statusItem?.button?.title = " \(Int(w.remainingPercent.rounded()))%"
     }
 
     @objc private func togglePanel() {

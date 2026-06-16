@@ -4,6 +4,7 @@ struct SettingsView: View {
     @AppStorage("dimmedOpacity") private var dimmedOpacity: Double = 0.35
     @AppStorage("dimDelaySeconds") private var dimDelaySeconds: Double = 5
     @AppStorage(QuotaStore.refreshIntervalKey) private var refreshInterval: Double = QuotaStore.defaultRefreshInterval
+    @AppStorage(MenuBarSource.storageKey) private var menuBarSourceRaw: String = MenuBarSource.auto.rawValue
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -38,6 +39,30 @@ struct SettingsView: View {
 
             Divider().padding(.vertical, 2)
 
+            Text("菜单栏")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("菜单栏显示")
+                    Spacer()
+                    Picker("", selection: $menuBarSourceRaw) {
+                        ForEach(MenuBarSource.allCases) { s in
+                            Text(s.displayName).tag(s.rawValue)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 220)
+                }
+                Text("决定菜单栏图标旁边的百分比代表 5 小时还是周。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            }
+
+            Divider().padding(.vertical, 2)
+
             Text("刷新")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.secondary)
@@ -59,7 +84,7 @@ struct SettingsView: View {
             Spacer()
         }
         .padding(20)
-        .frame(width: 380, height: 360)
+        .frame(width: 420, height: 440)
     }
 
     private func intervalLabel(_ s: Double) -> String {

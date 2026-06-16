@@ -71,6 +71,7 @@ The window auto-fades to a configurable opacity when your mouse leaves; hover to
 
 - **Idle opacity** — how transparent the window goes when your mouse is away (5%–100%).
 - **Fade delay** — seconds before fading kicks in (1–30s).
+- **Menu bar source** — which window the percentage in the menu bar represents: *Auto* (the tighter of the two), *5-hour*, or *Weekly*.
 - **Auto-refresh interval** — how often to re-read the session file (5s–10min). On top of this, the app also reloads instantly whenever Codex writes a new line, so a long interval here is fine.
 
 ## Build from source

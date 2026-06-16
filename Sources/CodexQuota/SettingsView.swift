@@ -4,7 +4,7 @@ struct SettingsView: View {
     @AppStorage("dimmedOpacity") private var dimmedOpacity: Double = 0.35
     @AppStorage("dimDelaySeconds") private var dimDelaySeconds: Double = 5
     @AppStorage(QuotaStore.refreshIntervalKey) private var refreshInterval: Double = QuotaStore.defaultRefreshInterval
-    @AppStorage(MenuBarSource.storageKey) private var menuBarSourceRaw: String = MenuBarSource.auto.rawValue
+    @AppStorage(MenuBarSource.storageKey) private var menuBarSourceRaw: String = MenuBarSource.defaultValue.rawValue
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {

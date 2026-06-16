@@ -59,16 +59,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let source = MenuBarSource(
             rawValue: UserDefaults.standard.string(forKey: MenuBarSource.storageKey) ?? ""
-        ) ?? .auto
+        ) ?? MenuBarSource.defaultValue
         let chosen: RateWindow?
         switch source {
         case .primary:
             chosen = snap.limits.primary
         case .secondary:
             chosen = snap.limits.secondary
-        case .auto:
-            let candidates = [snap.limits.primary, snap.limits.secondary].compactMap { $0 }
-            chosen = candidates.min(by: { $0.remainingPercent < $1.remainingPercent })
         }
         guard let w = chosen else {
             statusItem?.button?.title = " --"

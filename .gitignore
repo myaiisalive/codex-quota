@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+
+# SwiftPM
+.build/
+.swiftpm/
+Package.resolved
+
+# 构建产物
+CodexQuota.app/
+dist/
+
+# 生成的图标中间产物（保留 .icns 源是可选的，这里也忽略，由脚本自动生成）
+assets/AppIcon.iconset/
+assets/AppIcon.icns
+
+# 编辑器
+.vscode/
+.idea/
+*.xcodeproj
+*.xcworkspace

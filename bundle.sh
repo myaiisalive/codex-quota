@@ -12,6 +12,12 @@ CONTENTS="$APP_DIR/Contents"
 MACOS="$CONTENTS/MacOS"
 RES="$CONTENTS/Resources"
 
+# 版本号只读，不递增。本地构建额外加 -dev 后缀，避免和发布版混淆。
+VERSION_FILE="$ROOT/VERSION"
+RELEASE_VERSION="$(tr -d '[:space:]' < "$VERSION_FILE" 2>/dev/null || echo 0.0.0)"
+SHORT_VERSION="${RELEASE_VERSION}-dev"
+BUILD_VERSION="$(date +%Y%m%d%H%M)"
+
 echo "==> swift build -c release"
 swift build -c release
 
@@ -45,8 +51,8 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>$SHORT_VERSION</string>
+  <key>CFBundleVersion</key><string>$BUILD_VERSION</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>

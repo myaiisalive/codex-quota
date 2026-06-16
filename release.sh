@@ -9,7 +9,35 @@ cd "$ROOT"
 
 APP_NAME="CodexQuota"
 BUNDLE_ID="com.local.codexquota"
-VERSION="${1:-0.1.0}"
+VERSION_FILE="$ROOT/VERSION"
+
+# 版本号每一位最大 9，从 PATCH 起进位（9.9.9 之后回到 0.0.0）
+bump_version() {
+  local v="$1"
+  local IFS='.'
+  read -r MA MI PA <<<"$v"
+  MA=${MA:-0}; MI=${MI:-0}; PA=${PA:-0}
+  PA=$((PA + 1))
+  if [ "$PA" -gt 9 ]; then PA=0; MI=$((MI + 1)); fi
+  if [ "$MI" -gt 9 ]; then MI=0; MA=$((MA + 1)); fi
+  if [ "$MA" -gt 9 ]; then MA=0; fi
+  echo "$MA.$MI.$PA"
+}
+
+# 用法:
+#   ./release.sh           → 读 VERSION，递增后写回，作为本次版本
+#   ./release.sh 1.2.3     → 直接用 1.2.3，并写回 VERSION
+if [ ! -f "$VERSION_FILE" ]; then
+  echo "0.0.0" > "$VERSION_FILE"
+fi
+CURRENT="$(tr -d '[:space:]' < "$VERSION_FILE")"
+if [ $# -ge 1 ] && [ -n "$1" ]; then
+  VERSION="$1"
+else
+  VERSION="$(bump_version "$CURRENT")"
+fi
+echo "$VERSION" > "$VERSION_FILE"
+echo "==> 版本: $CURRENT → $VERSION"
 
 DIST="$ROOT/dist"
 rm -rf "$DIST"

@@ -44,7 +44,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName: "gauge.with.needle", accessibilityDescription: "Codex 额度")
         item.button?.imagePosition = .imageLeading
         item.button?.target = self
         item.button?.action = #selector(togglePanel)
@@ -54,24 +53,79 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateStatusTitle() {
         guard let snap = store.snapshot else {
-            statusItem?.button?.title = " --"
+            setStatusTitle(plain: "--")
             return
         }
-        let source = MenuBarSource(
-            rawValue: UserDefaults.standard.string(forKey: MenuBarSource.storageKey) ?? ""
-        ) ?? MenuBarSource.defaultValue
-        let chosen: RateWindow?
-        switch source {
-        case .primary:
-            chosen = snap.limits.primary
-        case .secondary:
-            chosen = snap.limits.secondary
+        let countRaw = UserDefaults.standard.integer(forKey: MenuBarCount.storageKey)
+        let count = MenuBarCount(rawValue: countRaw) ?? MenuBarCount.defaultValue
+        let showLabel: Bool = {
+            if UserDefaults.standard.object(forKey: MenuBarCount.showLabelKey) == nil { return true }
+            return UserDefaults.standard.bool(forKey: MenuBarCount.showLabelKey)
+        }()
+
+        switch count {
+        case .two:
+            let s = NSMutableAttributedString()
+            s.append(part(snap.limits.primary, symbol: "h.square.fill", showLabel: showLabel))
+            s.append(NSAttributedString(string: " · ", attributes: baseAttrs(secondary: true)))
+            s.append(part(snap.limits.secondary, symbol: "w.square.fill", showLabel: showLabel))
+            statusItem?.button?.attributedTitle = s
+        case .one:
+            let source = MenuBarSource(
+                rawValue: UserDefaults.standard.string(forKey: MenuBarSource.storageKey) ?? ""
+            ) ?? MenuBarSource.defaultValue
+            let chosen: RateWindow?
+            let symbol: String
+            switch source {
+            case .primary:
+                chosen = snap.limits.primary;   symbol = "h.square.fill"
+            case .secondary:
+                chosen = snap.limits.secondary; symbol = "w.square.fill"
+            case .auto:
+                let pairs: [(RateWindow, String)] = [
+                    snap.limits.primary.map { ($0, "h.square.fill") },
+                    snap.limits.secondary.map { ($0, "w.square.fill") }
+                ].compactMap { $0 }
+                if let pick = pairs.min(by: { $0.0.remainingPercent < $1.0.remainingPercent }) {
+                    chosen = pick.0; symbol = pick.1
+                } else {
+                    chosen = nil; symbol = "h.square.fill"
+                }
+            }
+            statusItem?.button?.attributedTitle = part(chosen, symbol: symbol, showLabel: showLabel)
         }
-        guard let w = chosen else {
-            statusItem?.button?.title = " --"
-            return
+    }
+
+    private func setStatusTitle(plain: String) {
+        let attr = NSAttributedString(string: " \(plain)", attributes: baseAttrs())
+        statusItem?.button?.attributedTitle = attr
+    }
+
+    private func baseAttrs(secondary: Bool = false) -> [NSAttributedString.Key: Any] {
+        let font = NSFont.menuBarFont(ofSize: 0)
+        return [
+            .font: font,
+            .foregroundColor: secondary ? NSColor.secondaryLabelColor : NSColor.labelColor
+        ]
+    }
+
+    /// 一个「图标 + 百分比」组合
+    private func part(_ w: RateWindow?, symbol: String, showLabel: Bool) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        if showLabel {
+            let attachment = NSTextAttachment()
+            let cfg = NSImage.SymbolConfiguration(pointSize: 8, weight: .semibold)
+            if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+                .withSymbolConfiguration(cfg) {
+                img.isTemplate = true
+                attachment.image = img
+            }
+            result.append(NSAttributedString(attachment: attachment))
+            result.append(NSAttributedString(string: " ", attributes: baseAttrs()))
         }
-        statusItem?.button?.title = " \(Int(w.remainingPercent.rounded()))%"
+        let pct = w.map { "\(Int($0.remainingPercent.rounded()))%" } ?? "--"
+        result.append(NSAttributedString(string: pct, attributes: baseAttrs()))
+        return result
     }
 
     @objc private func togglePanel() {

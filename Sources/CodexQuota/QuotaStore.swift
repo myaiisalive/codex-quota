@@ -9,6 +9,16 @@ final class QuotaStore: ObservableObject {
 
     private var watcher: SessionsWatcher?
     private var timer: Timer?
+    private var defaultsObserver: NSObjectProtocol?
+
+    /// 当前使用的刷新间隔（秒）。默认 30s。
+    static let refreshIntervalKey = "refreshIntervalSeconds"
+    static let defaultRefreshInterval: Double = 30
+
+    private var currentInterval: Double {
+        let v = UserDefaults.standard.double(forKey: Self.refreshIntervalKey)
+        return v > 0 ? v : Self.defaultRefreshInterval
+    }
 
     func start() {
         reload()
@@ -17,8 +27,31 @@ final class QuotaStore: ObservableObject {
             onChange: { [weak self] in self?.reload() }
         )
         watcher?.start()
-        // 兜底：每 30 秒强制刷新一次（让"重置倒计时"显示更顺畅）
-        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+        rebuildTimer()
+
+        // 监听设置变化，自动重建 timer
+        defaultsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.rebuildTimerIfNeeded() }
+        }
+    }
+
+    private var lastBuiltInterval: Double = 0
+
+    private func rebuildTimerIfNeeded() {
+        if abs(currentInterval - lastBuiltInterval) > 0.01 {
+            rebuildTimer()
+        }
+    }
+
+    private func rebuildTimer() {
+        timer?.invalidate()
+        let interval = currentInterval
+        lastBuiltInterval = interval
+        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.reload() }
         }
     }

@@ -11,12 +11,7 @@ struct RateWindow: Codable, Equatable {
         case resetsAt = "resets_at"
     }
 
-    /// 真实剩余百分比：超过 resets_at 视为已重置
-    var effectiveUsedPercent: Double {
-        Date().timeIntervalSince1970 >= resetsAt ? 0 : usedPercent
-    }
-
-    var remainingPercent: Double { 100 - effectiveUsedPercent }
+    var remainingPercent: Double { 100 - usedPercent }
 
     /// 窗口名称：5h / 1w 等
     var windowLabel: String {

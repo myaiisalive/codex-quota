@@ -7,7 +7,7 @@ enum QuotaReader {
         return home.appendingPathComponent(".codex/sessions", isDirectory: true)
     }()
 
-    /// 找到所有 .jsonl 文件，按修改时间倒序
+    /// 找到所有 .jsonl 文件，按 mtime 倒序（正在使用的 session 会持续更新 mtime）
     static func findSessionFiles(limit: Int = 8) -> [URL] {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(
@@ -94,8 +94,6 @@ enum QuotaReader {
             if best == nil || date > best!.1 {
                 best = (limits, date)
             }
-            // 通常最新文件就含最新数据，但保险起见再多扫几个
-            if best != nil { break }
         }
         guard let best else { return nil }
         return QuotaSnapshot(limits: best.0, capturedAt: best.1)

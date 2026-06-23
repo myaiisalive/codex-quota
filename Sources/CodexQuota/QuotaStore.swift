@@ -55,33 +55,38 @@ final class QuotaStore: ObservableObject {
     }
 
     func reloadApiBalance() {
-        guard let codex = CodexConfig.loadActive() else {
-            self.apiBalance = nil
-            self.apiBalanceError = nil
-            self.thirdPartyApiOnly = false
-            return
-        }
-        self.thirdPartyApiOnly = codex.isThirdPartyApiMode
-        guard let provider = CCSwitchProvider.find(
-            matchingHost: codex.host,
-            rootDomain: codex.rootDomain
-        ) else {
-            self.apiBalance = nil
-            self.apiBalanceError = "CC Switch 中未找到 \(codex.host) 的配置"
-            return
-        }
+        Task {
+            // CodexConfig + CCSwitchProvider 都是同步文件/SQLite I/O，移到后台
+            let result = await Task.detached(priority: .utility) { () -> (CodexConfig, CCSwitchProvider)? in
+                guard let codex = CodexConfig.loadActive() else { return nil }
+                guard let provider = CCSwitchProvider.find(matchingHost: codex.host, rootDomain: codex.rootDomain) else {
+                    return nil
+                }
+                return (codex, provider)
+            }.value
 
-        Task { [weak self] in
+            guard let (codex, provider) = result else {
+                let isThirdParty = await Task.detached(priority: .utility) {
+                    CodexConfig.loadActive()?.isThirdPartyApiMode ?? false
+                }.value
+                self.thirdPartyApiOnly = isThirdParty
+                if !isThirdParty {
+                    self.apiBalance = nil
+                    self.apiBalanceError = nil
+                } else {
+                    self.apiBalance = nil
+                    self.apiBalanceError = "CC Switch 中未找到对应配置"
+                }
+                return
+            }
+            self.thirdPartyApiOnly = codex.isThirdPartyApiMode
+
             do {
                 let balance = try await UsageScriptRunner.run(provider: provider)
-                await MainActor.run {
-                    self?.apiBalance = balance
-                    self?.apiBalanceError = balance.isValid ? nil : (balance.invalidMessage ?? "余额查询失败")
-                }
+                self.apiBalance = balance
+                self.apiBalanceError = balance.isValid ? nil : (balance.invalidMessage ?? "余额查询失败")
             } catch {
-                await MainActor.run {
-                    self?.apiBalanceError = "余额查询失败：\(error)"
-                }
+                self.apiBalanceError = "余额查询失败：\(error)"
             }
         }
     }
@@ -105,11 +110,16 @@ final class QuotaStore: ObservableObject {
     }
 
     func reload() {
-        if let snap = QuotaReader.loadLatest() {
-            self.snapshot = snap
-            self.lastError = nil
-        } else if snapshot == nil {
-            self.lastError = "未找到 ~/.codex/sessions 中的额度数据，请先运行一次 codex"
+        Task {
+            let snap = await Task.detached(priority: .utility) {
+                QuotaReader.loadLatest()
+            }.value
+            if let snap {
+                self.snapshot = snap
+                self.lastError = nil
+            } else if self.snapshot == nil {
+                self.lastError = "未找到 ~/.codex/sessions 中的额度数据，请先运行一次 codex"
+            }
         }
     }
 }

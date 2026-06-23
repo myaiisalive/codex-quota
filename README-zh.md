@@ -12,6 +12,22 @@ Codex CLI 每次调用模型后会把限流信息写到本地会话日志里。C
 
 ## 安装
 
+### Homebrew（推荐）
+
+```sh
+brew tap myaiisalive/tap
+brew trust myaiisalive/tap
+brew install --cask codex-quota
+```
+
+更新到新版本：
+
+```sh
+brew upgrade --cask codex-quota
+```
+
+### 手动下载
+
 到 [Releases 页面](https://github.com/myaiisalive/codex-quota/releases) 下载一个包：
 
 | 文件 | 适用 |
@@ -74,7 +90,42 @@ Codex CLI 每次调用模型后会把限流信息写到本地会话日志里。C
 - **菜单栏显示**——菜单栏图标旁边的百分比代表 5 小时还是周（默认 5 小时）。
 - **自动刷新间隔**——多久重新读一次会话文件（5 秒–10 分钟）。除了这个间隔，文件一旦有变化也会立刻刷新，所以这里调长一点也没关系。
 
-## 自己构建
+## 发版流程
+
+### 1. 构建分发包并发 GitHub Release
+
+```sh
+./release.sh          # 自动递增版本号（0.3.4 → 0.3.5）
+# 或者指定版本：
+./release.sh 1.0.0
+```
+
+脚本会在 `dist/` 生成 4 个包，然后用 `gh` 发布：
+
+```sh
+gh release create v0.3.5 \
+  --title "v0.3.5" \
+  --notes-file dist/RELEASE_NOTES.md \
+  dist/CodexQuota-0.3.5-universal.dmg \
+  dist/CodexQuota-0.3.5-universal.zip \
+  dist/CodexQuota-0.3.5-arm64.dmg \
+  dist/CodexQuota-0.3.5-arm64.zip
+```
+
+### 2. 更新 Homebrew Tap
+
+发完 GitHub Release 之后，拿新包的 SHA256，更新 tap 仓库的 Cask 文件（[myaiisalive/homebrew-tap](https://github.com/myaiisalive/homebrew-tap)）：
+
+```sh
+# 从 release 拿 sha256
+gh release view v0.3.5 --json assets --jq '.assets[] | "\(.name) \(.digest)"'
+
+# 更新 Casks/codex-quota.rb 里的 version 和两个 sha256，然后推送
+```
+
+Cask 文件路径：`Casks/codex-quota.rb`，修改 `version`、两个 `sha256` 字段后推送即可，用户下次运行 `brew upgrade --cask codex-quota` 就会拿到新版本。
+
+
 
 需要 macOS 13+ 和 Command Line Tools（`xcode-select --install`，自带 Swift，不必装完整 Xcode）。
 

@@ -12,6 +12,22 @@ This also means: **the numbers only change when you actually run Codex**. While 
 
 ## Install
 
+### Homebrew (recommended)
+
+```sh
+brew tap myaiisalive/tap
+brew trust myaiisalive/tap
+brew install --cask codex-quota
+```
+
+To update:
+
+```sh
+brew upgrade --cask codex-quota
+```
+
+### Manual download
+
 Grab a build from the [Releases page](https://github.com/myaiisalive/codex-quota/releases):
 
 | File | For |
@@ -73,6 +89,41 @@ The window auto-fades to a configurable opacity when your mouse leaves; hover to
 - **Fade delay** — seconds before fading kicks in (1–30s).
 - **Menu bar source** — whether the percentage in the menu bar represents the 5-hour or weekly window (default: 5-hour).
 - **Auto-refresh interval** — how often to re-read the session file (5s–10min). On top of this, the app also reloads instantly whenever Codex writes a new line, so a long interval here is fine.
+
+## Release workflow
+
+### 1. Build and publish a GitHub Release
+
+```sh
+./release.sh          # auto-increments version (0.3.4 → 0.3.5)
+# or specify explicitly:
+./release.sh 1.0.0
+```
+
+The script produces 4 packages in `dist/`. Publish them with `gh`:
+
+```sh
+gh release create v0.3.5 \
+  --title "v0.3.5" \
+  --notes-file dist/RELEASE_NOTES.md \
+  dist/CodexQuota-0.3.5-universal.dmg \
+  dist/CodexQuota-0.3.5-universal.zip \
+  dist/CodexQuota-0.3.5-arm64.dmg \
+  dist/CodexQuota-0.3.5-arm64.zip
+```
+
+### 2. Update the Homebrew tap
+
+After the GitHub Release is live, grab the new SHA256 digests and update the Cask file in [myaiisalive/homebrew-tap](https://github.com/myaiisalive/homebrew-tap):
+
+```sh
+# fetch sha256 from the release
+gh release view v0.3.5 --json assets --jq '.assets[] | "\(.name) \(.digest)"'
+
+# edit Casks/codex-quota.rb: bump version + both sha256 values, then push
+```
+
+Users will get the update on their next `brew upgrade --cask codex-quota`.
 
 ## Build from source
 

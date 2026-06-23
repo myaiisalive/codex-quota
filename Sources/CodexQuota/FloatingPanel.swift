@@ -14,12 +14,11 @@ final class FloatingPanel: NSPanel {
         isFloatingPanel = true
         level = .statusBar
         collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
-        isMovableByWindowBackground = true
+        isMovableByWindowBackground = false
         backgroundColor = .clear
         hasShadow = true
         isOpaque = false
         titlebarAppearsTransparent = true
-
         // 还原上次位置（仅记忆左上角）
         if let originStr = UserDefaults.standard.string(forKey: Self.originKey) {
             setFrameTopLeftPoint(NSPointFromString(originStr))
@@ -65,6 +64,21 @@ final class FloatingPanel: NSPanel {
     }
 
     override var canBecomeKey: Bool { true }
+
+    private var dragOffset: NSPoint = .zero
+
+    override func mouseDown(with event: NSEvent) {
+        dragOffset = event.locationInWindow
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        let loc = event.locationInWindow
+        let newOrigin = NSPoint(
+            x: frame.origin.x + loc.x - dragOffset.x,
+            y: frame.origin.y + loc.y - dragOffset.y
+        )
+        setFrameOrigin(newOrigin)
+    }
 
     override func setFrame(_ frameRect: NSRect, display flag: Bool) {
         super.setFrame(frameRect, display: flag)

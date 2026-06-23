@@ -82,7 +82,7 @@ final class QuotaStore: ObservableObject {
             self.thirdPartyApiOnly = codex.isThirdPartyApiMode
 
             do {
-                let balance = try await UsageScriptRunner.run(provider: provider)
+                let balance = try await UsageScriptRunner.run(provider: provider, codexApiKey: codex.apiKey.isEmpty ? nil : codex.apiKey)
                 self.apiBalance = balance
                 self.apiBalanceError = balance.isValid ? nil : (balance.invalidMessage ?? "余额查询失败")
             } catch {

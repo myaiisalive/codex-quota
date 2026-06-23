@@ -2,15 +2,13 @@ import Foundation
 
 /// 从 ~/.codex/config.toml 读出当前活跃的第三方 provider 信息
 struct CodexConfig {
-    let providerKey: String       // e.g. "custom"
-    let providerName: String      // e.g. "Now Coding 全球加速"
-    let baseUrl: String           // e.g. "https://nowcoding.ai/v1"
-    let hasApiKey: Bool           // auth.json 里 OPENAI_API_KEY 是否非空
+    let providerKey: String
+    let providerName: String
+    let baseUrl: String
+    let apiKey: String       // auth.json 里 OPENAI_API_KEY 的实际值（空字符串表示未配置）
 
-    /// auth.json 有 key + base_url 不是官方 OpenAI → 纯第三方 API 模式
-    var isThirdPartyApiMode: Bool { hasApiKey }
+    var isThirdPartyApiMode: Bool { !apiKey.isEmpty }
 
-    /// 返回 nil 表示用的是官方 OpenAI 或未配置第三方
     static func loadActive() -> CodexConfig? {
         let path = NSString(string: "~/.codex/config.toml").expandingTildeInPath
         guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
@@ -26,17 +24,17 @@ struct CodexConfig {
             providerKey: providerKey,
             providerName: name,
             baseUrl: baseUrl,
-            hasApiKey: loadApiKeyNonEmpty()
+            apiKey: loadApiKey()
         )
     }
 
-    private static func loadApiKeyNonEmpty() -> Bool {
+    private static func loadApiKey() -> String {
         let path = NSString(string: "~/.codex/auth.json").expandingTildeInPath
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return false }
-        if let key = json["OPENAI_API_KEY"] as? String, !key.isEmpty { return true }
-        return false
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let key = json["OPENAI_API_KEY"] as? String
+        else { return "" }
+        return key
     }
 
     var host: String {

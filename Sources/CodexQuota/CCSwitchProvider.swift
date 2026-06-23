@@ -16,30 +16,28 @@ struct CCSwitchProvider {
         guard FileManager.default.fileExists(atPath: dbPath) else { return nil }
 
         var db: OpaquePointer?
-        // 只读打开
-        let flags = SQLITE_OPEN_READONLY
-        guard sqlite3_open_v2(dbPath, &db, flags, nil) == SQLITE_OK, let db else { return nil }
+        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else { return nil }
         defer { sqlite3_close(db) }
 
         var stmt: OpaquePointer?
-        let sql = "SELECT name, meta FROM providers WHERE meta LIKE '%usage_script%'"
+        // ORDER BY rowid DESC → 取最近添加的，保证多个同域 provider 时结果确定
+        let sql = "SELECT name, meta FROM providers WHERE meta LIKE '%usage_script%' ORDER BY rowid DESC"
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
         defer { sqlite3_finalize(stmt) }
 
+        var rootMatch: CCSwitchProvider?   // 根域匹配候选，优先返回精确 host 匹配
         while sqlite3_step(stmt) == SQLITE_ROW {
             guard let nameC = sqlite3_column_text(stmt, 0),
                   let metaC = sqlite3_column_text(stmt, 1) else { continue }
-            let providerName = String(cString: nameC)
-            let metaStr = String(cString: metaC)
-            guard let candidate = parse(name: providerName, metaJson: metaStr) else { continue }
-
-            if let candHost = URL(string: candidate.baseUrl)?.host?.lowercased() {
-                if candHost == host || hostMatchesRoot(candHost, rootDomain) {
-                    return candidate
-                }
+            let candidate = parse(name: String(cString: nameC), metaJson: String(cString: metaC))
+            guard let candidate else { continue }
+            guard let candHost = URL(string: candidate.baseUrl)?.host?.lowercased() else { continue }
+            if candHost == host { return candidate }           // 精确匹配，直接返回
+            if rootMatch == nil && hostMatchesRoot(candHost, rootDomain) {
+                rootMatch = candidate
             }
         }
-        return nil
+        return rootMatch
     }
 
     private static func hostMatchesRoot(_ host: String, _ root: String) -> Bool {

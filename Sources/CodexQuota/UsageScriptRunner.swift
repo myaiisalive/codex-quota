@@ -24,14 +24,15 @@ enum UsageScriptRunner {
         case invalidJSON
     }
 
-    static func run(provider: CCSwitchProvider) async throws -> Balance {
-        // 1. 模板替换（baseUrl 末尾保留，extractor 里要用）
+    static func run(provider: CCSwitchProvider, codexApiKey: String? = nil) async throws -> Balance {
         let baseUrl = provider.baseUrl.hasSuffix("/")
             ? String(provider.baseUrl.dropLast())
             : provider.baseUrl
+        // codexApiKey 优先：codex auth.json 里的 key 才是实际使用的那个
+        let apiKey = codexApiKey ?? provider.apiKey ?? ""
         let filled = provider.usageScriptCode
             .replacingOccurrences(of: "{{baseUrl}}", with: baseUrl)
-            .replacingOccurrences(of: "{{apiKey}}", with: provider.apiKey ?? "")
+            .replacingOccurrences(of: "{{apiKey}}", with: apiKey)
             .replacingOccurrences(of: "{{accessToken}}", with: provider.accessToken ?? "")
             .replacingOccurrences(of: "{{userId}}", with: provider.userId ?? "")
 

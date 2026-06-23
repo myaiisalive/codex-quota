@@ -19,6 +19,7 @@ enum UsageScriptRunner {
     enum RunError: Error {
         case jsEvalFailed(String)
         case badRequestSpec
+        case badRequestBody
         case http(Int)
         case network(Error)
         case invalidJSON
@@ -58,13 +59,15 @@ enum UsageScriptRunner {
         }
 
         let method = request.objectForKeyedSubscript("method")?.toString() ?? "GET"
-        let headers = request.objectForKeyedSubscript("headers")?.toDictionary() as? [String: String] ?? [:]
+        let headers = headerMap(from: request.objectForKeyedSubscript("headers"))
+        let body = try requestBodyData(from: request)
 
         // 3. 发请求
         var req = URLRequest(url: url)
         req.httpMethod = method
-        req.timeoutInterval = 15
+        req.timeoutInterval = provider.timeoutSeconds ?? 15
         for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
+        req.httpBody = body
 
         let (data, resp): (Data, URLResponse)
         do {
@@ -99,16 +102,7 @@ enum UsageScriptRunner {
             throw RunError.jsEvalFailed("extractor 失败")
         }
 
-        return Balance(
-            providerName: provider.name,
-            remaining: result["remaining"] as? Double,
-            used: result["used"] as? Double,
-            total: result["total"] as? Double,
-            unit: result["unit"] as? String,
-            planName: result["planName"] as? String,
-            isValid: result["isValid"] as? Bool ?? true,
-            invalidMessage: result["invalidMessage"] as? String
-        )
+        return parseBalance(providerName: provider.name, result: result)
     }
 
     /// 把任意字符串安全嵌入到 JS 源里（带引号）
@@ -123,5 +117,128 @@ enum UsageScriptRunner {
             return s
         }
         return "\"\""
+    }
+
+    private static func headerMap(from value: JSValue?) -> [String: String] {
+        guard let raw = value?.toDictionary() as? [String: Any] else { return [:] }
+        var result: [String: String] = [:]
+        for (key, value) in raw {
+            if let text = stringValue(value) {
+                result[key] = text
+            }
+        }
+        return result
+    }
+
+    private static func requestBodyData(from request: JSValue) throws -> Data? {
+        for key in ["body", "data"] {
+            guard let value = request.objectForKeyedSubscript(key),
+                  !value.isUndefined,
+                  !value.isNull else { continue }
+
+            if let body = bodyData(from: value) {
+                return body
+            }
+            throw RunError.badRequestBody
+        }
+        return nil
+    }
+
+    private static func bodyData(from value: JSValue) -> Data? {
+        if value.isString {
+            return value.toString()?.data(using: .utf8)
+        }
+
+        if let dict = value.toDictionary(),
+           JSONSerialization.isValidJSONObject(dict),
+           let data = try? JSONSerialization.data(withJSONObject: dict) {
+            return data
+        }
+
+        if let array = value.toArray(),
+           JSONSerialization.isValidJSONObject(array),
+           let data = try? JSONSerialization.data(withJSONObject: array) {
+            return data
+        }
+
+        if value.isBoolean || value.isNumber {
+            return value.toString()?.data(using: .utf8)
+        }
+        return nil
+    }
+
+    private static func parseBalance(providerName: String, result: [String: Any]) -> Balance {
+        var remaining = doubleValue(result["remaining"])
+        var used = doubleValue(result["used"])
+        var total = doubleValue(result["total"])
+
+        if remaining == nil, let used, let total { remaining = total - used }
+        if used == nil, let remaining, let total { used = total - remaining }
+        if total == nil, let remaining, let used { total = remaining + used }
+
+        remaining = normalizeNearZero(remaining)
+        used = normalizeNearZero(used)
+        total = normalizeNearZero(total)
+
+        let invalidMessage = stringValue(result["invalidMessage"]) ?? stringValue(result["message"])
+        return Balance(
+            providerName: providerName,
+            remaining: remaining,
+            used: used,
+            total: total,
+            unit: stringValue(result["unit"]),
+            planName: stringValue(result["planName"]),
+            isValid: boolValue(result["isValid"]) ?? true,
+            invalidMessage: invalidMessage
+        )
+    }
+
+    private static func normalizeNearZero(_ value: Double?) -> Double? {
+        guard let value else { return nil }
+        return abs(value) < 0.000_001 ? 0 : value
+    }
+
+    private static func doubleValue(_ raw: Any?) -> Double? {
+        switch raw {
+        case let value as Double:
+            return value
+        case let value as NSNumber:
+            return value.doubleValue
+        case let value as String:
+            return Double(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        default:
+            return nil
+        }
+    }
+
+    private static func boolValue(_ raw: Any?) -> Bool? {
+        switch raw {
+        case let value as Bool:
+            return value
+        case let value as NSNumber:
+            return value.boolValue
+        case let value as String:
+            switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "true", "1", "yes":
+                return true
+            case "false", "0", "no":
+                return false
+            default:
+                return nil
+            }
+        default:
+            return nil
+        }
+    }
+
+    private static func stringValue(_ raw: Any?) -> String? {
+        switch raw {
+        case let value as String:
+            return value
+        case let value as NSNumber:
+            return value.stringValue
+        default:
+            return nil
+        }
     }
 }

@@ -8,7 +8,7 @@ final class QuotaStore: ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var apiBalance: UsageScriptRunner.Balance?
     @Published private(set) var apiBalanceError: String?
-    /// 第三方 API 模式：auth.json 有 key 且 base_url 不是 OpenAI 官方
+    /// 第三方 API 模式：当前激活的是非官方 provider
     /// 此时只显示 API 余额，不显示 5 小时/周
     @Published private(set) var thirdPartyApiOnly: Bool = false
 
@@ -57,35 +57,37 @@ final class QuotaStore: ObservableObject {
     func reloadApiBalance() {
         Task {
             // CodexConfig + CCSwitchProvider 都是同步文件/SQLite I/O，移到后台
-            let result = await Task.detached(priority: .utility) { () -> (CodexConfig, CCSwitchProvider)? in
+            let result = await Task.detached(priority: .utility) { () -> (CodexConfig, CCSwitchProvider?)? in
                 guard let codex = CodexConfig.loadActive() else { return nil }
-                guard let provider = CCSwitchProvider.find(matchingHost: codex.host, rootDomain: codex.rootDomain) else {
-                    return nil
-                }
+                let provider = CCSwitchProvider.find(for: codex)
                 return (codex, provider)
             }.value
 
             guard let (codex, provider) = result else {
-                let isThirdParty = await Task.detached(priority: .utility) {
-                    CodexConfig.loadActive()?.isThirdPartyApiMode ?? false
-                }.value
-                self.thirdPartyApiOnly = isThirdParty
-                if !isThirdParty {
-                    self.apiBalance = nil
-                    self.apiBalanceError = nil
-                } else {
-                    self.apiBalance = nil
-                    self.apiBalanceError = "CC Switch 中未找到对应配置"
-                }
+                self.thirdPartyApiOnly = false
+                self.apiBalance = nil
+                self.apiBalanceError = nil
                 return
             }
+
             self.thirdPartyApiOnly = codex.isThirdPartyApiMode
+            guard let provider else {
+                self.apiBalance = nil
+                self.apiBalanceError = "CC Switch 中未找到对应配置"
+                return
+            }
 
             do {
                 let balance = try await UsageScriptRunner.run(provider: provider, codexApiKey: codex.apiKey.isEmpty ? nil : codex.apiKey)
-                self.apiBalance = balance
-                self.apiBalanceError = balance.isValid ? nil : (balance.invalidMessage ?? "余额查询失败")
+                if balance.isValid {
+                    self.apiBalance = balance
+                    self.apiBalanceError = nil
+                } else {
+                    self.apiBalance = nil
+                    self.apiBalanceError = balance.invalidMessage ?? "余额查询失败"
+                }
             } catch {
+                self.apiBalance = nil
                 self.apiBalanceError = "余额查询失败：\(error)"
             }
         }

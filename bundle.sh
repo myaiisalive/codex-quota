@@ -17,6 +17,33 @@ VERSION_FILE="$ROOT/VERSION"
 RELEASE_VERSION="$(tr -d '[:space:]' < "$VERSION_FILE" 2>/dev/null || echo 0.0.0)"
 SHORT_VERSION="${RELEASE_VERSION}-dev"
 BUILD_VERSION="$(date +%Y%m%d%H%M)"
+RELAUNCH_AFTER_BUILD=0
+
+if [ "${1-}" = "--relaunch" ]; then
+  RELAUNCH_AFTER_BUILD=1
+fi
+
+quit_running_app() {
+  if ! pgrep -x "$APP_NAME" >/dev/null 2>&1; then
+    return
+  fi
+
+  osascript -e "tell application \"$APP_NAME\" to quit" >/dev/null 2>&1 || true
+  for _ in {1..30}; do
+    if ! pgrep -x "$APP_NAME" >/dev/null 2>&1; then
+      return
+    fi
+    sleep 0.1
+  done
+
+  pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+  for _ in {1..30}; do
+    if ! pgrep -x "$APP_NAME" >/dev/null 2>&1; then
+      return
+    fi
+    sleep 0.1
+  done
+}
 
 echo "==> swift build -c release"
 swift build -c release
@@ -64,4 +91,12 @@ PLIST
 codesign --force --sign - "$APP_DIR" >/dev/null 2>&1 || true
 
 echo "==> 完成: $APP_DIR"
-echo "运行: open $APP_DIR"
+if [ "$RELAUNCH_AFTER_BUILD" -eq 1 ]; then
+  echo "==> 重启运行中的 $APP_NAME"
+  quit_running_app
+  open -n "$APP_DIR"
+  echo "已启动: $APP_DIR"
+else
+  echo "运行: open $APP_DIR"
+  echo "或:   ./bundle.sh --relaunch"
+fi

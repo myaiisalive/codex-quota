@@ -2,6 +2,13 @@ import Foundation
 
 /// 从 ~/.codex/sessions/**/*.jsonl 中读取最新的 rate_limits
 enum QuotaReader {
+    private static let tailReadSizes: [Int] = [
+        256 * 1024,
+        1024 * 1024,
+        4 * 1024 * 1024,
+        16 * 1024 * 1024
+    ]
+
     static let sessionsRoot: URL = {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return home.appendingPathComponent(".codex/sessions", isDirectory: true)
@@ -28,21 +35,29 @@ enum QuotaReader {
         return files.prefix(limit).map { $0.0 }
     }
 
-    /// 反向扫描文件，找到第一条带 rate_limits 的事件
+    /// 反向扫描文件，优先取“更像主额度”的 rate_limits，避免误拿到某个模型自己的额度桶
     static func extractLatestLimits(from url: URL) -> (RateLimits, Date)? {
-        guard let data = try? Data(contentsOf: url),
-              let text = String(data: data, encoding: .utf8) else { return nil }
+        guard let fileSize = fileSize(of: url) else { return nil }
 
-        // 反向遍历每一行，命中含 rate_limits 的就解析
-        let lines = text.split(omittingEmptySubsequences: true, whereSeparator: { $0.isNewline })
-        for line in lines.reversed() {
-            guard line.contains("\"rate_limits\"") else { continue }
-            guard let lineData = line.data(using: .utf8) else { continue }
-            if let parsed = parseLine(lineData) {
-                return parsed
+        var fallback: (RateLimits, Date)?
+        var fallbackPriority = Int.min
+
+        for maxBytes in tailReadSizes {
+            let bytesToRead = min(maxBytes, fileSize)
+            let isPartialRead = bytesToRead < fileSize
+            guard let text = readTailText(from: url, bytesToRead: bytesToRead) else { continue }
+            guard let candidate = extractBestLimits(from: text, dropFirstLine: isPartialRead) else { continue }
+
+            let priority = candidate.0.displayPriority
+            if priority > fallbackPriority {
+                fallback = candidate
+                fallbackPriority = priority
+            }
+            if priority >= RateLimits.maxDisplayPriority || !isPartialRead {
+                return candidate
             }
         }
-        return nil
+        return fallback
     }
 
     private struct Envelope: Decodable {
@@ -89,13 +104,72 @@ enum QuotaReader {
     /// 主入口：在最新若干个会话文件中寻找最新的快照
     static func loadLatest() -> QuotaSnapshot? {
         var best: (RateLimits, Date)?
+        var bestPriority = Int.min
+
         for file in findSessionFiles(limit: 12) {
+            if let best,
+               bestPriority >= RateLimits.maxDisplayPriority,
+               let mtime = modificationDate(of: file),
+               mtime < best.1 {
+                break
+            }
+
             guard let (limits, date) = extractLatestLimits(from: file) else { continue }
-            if best == nil || date > best!.1 {
+            let priority = limits.displayPriority
+
+            if best == nil || priority > bestPriority || (priority == bestPriority && date > best!.1) {
                 best = (limits, date)
+                bestPriority = priority
             }
         }
+
         guard let best else { return nil }
         return QuotaSnapshot(limits: best.0, capturedAt: best.1)
+    }
+
+    private static func extractBestLimits(from text: String, dropFirstLine: Bool) -> (RateLimits, Date)? {
+        var best: (RateLimits, Date)?
+        var bestPriority = Int.min
+        let lines = text.split(omittingEmptySubsequences: true, whereSeparator: { $0.isNewline })
+        let iterable = dropFirstLine ? lines.dropFirst() : ArraySlice(lines)
+
+        for line in iterable.reversed() {
+            guard line.contains("\"rate_limits\"") else { continue }
+            guard let lineData = line.data(using: .utf8) else { continue }
+            guard let parsed = parseLine(lineData) else { continue }
+
+            let priority = parsed.0.displayPriority
+            guard priority >= 0 else { continue }
+            if priority > bestPriority {
+                best = parsed
+                bestPriority = priority
+            }
+        }
+        return best
+    }
+
+    private static func readTailText(from url: URL, bytesToRead: Int) -> String? {
+        guard bytesToRead > 0,
+              let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+
+        guard let fileSize = try? handle.seekToEnd(),
+              fileSize > 0 else { return nil }
+        let readCount = min(UInt64(bytesToRead), fileSize)
+        let offset = fileSize - readCount
+        try? handle.seek(toOffset: offset)
+        let data = handle.readData(ofLength: Int(readCount))
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private static func fileSize(of url: URL) -> Int? {
+        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
+              let size = values.fileSize,
+              size > 0 else { return nil }
+        return size
+    }
+
+    private static func modificationDate(of url: URL) -> Date? {
+        try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
     }
 }

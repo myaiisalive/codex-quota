@@ -9,11 +9,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     private var cancellable: Any?
     private var minimizedToDock = false
+    private var isRelaunchingForUpdate = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         store.start()
         setupStatusItem()
-        showPanel()
+        showPanel(refreshWhenBecomingVisible: true)
 
         cancellable = store.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async { self?.updateStatusTitle() }
@@ -34,11 +35,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 用户点 Dock 图标时回来：恢复浮窗，并把 Dock 图标移除
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if relaunchIfInstalledVersionIsNewer() { return true }
+        refreshAll()
         if minimizedToDock { restoreFromDock() }
         return true
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        if relaunchIfInstalledVersionIsNewer() { return }
+        refreshAll()
         if minimizedToDock { restoreFromDock() }
     }
 
@@ -207,11 +212,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let event = NSApp.currentEvent, event.type == .rightMouseUp {
             showMenu(); return
         }
+        if relaunchIfInstalledVersionIsNewer() { return }
         if minimizedToDock { restoreFromDock() }
-        showPanel()
+        refreshAll()
+        showPanel(refreshWhenBecomingVisible: true)
     }
 
-    private func showPanel() {
+    private func showPanel(refreshWhenBecomingVisible: Bool = false) {
         if panel == nil {
             let p = FloatingPanel()
             let view = QuotaView(
@@ -229,6 +236,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel = p
         }
         panel?.orderFrontRegardless()
+        if refreshWhenBecomingVisible {
+            refreshAll()
+        }
     }
 
     /// 切到 .regular 让 Dock 出现图标，再把 panel 隐藏
@@ -242,8 +252,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 从 Dock 点回来：恢复 panel，切回 .accessory（Dock 图标消失）
     private func restoreFromDock() {
         minimizedToDock = false
-        showPanel()
+        showPanel(refreshWhenBecomingVisible: true)
         NSApp.setActivationPolicy(.accessory)
+    }
+
+    private func refreshAll() {
+        store.reload()
+        store.reloadApiBalance()
+    }
+
+    private func relaunchIfInstalledVersionIsNewer() -> Bool {
+        guard !isRelaunchingForUpdate else { return true }
+        guard let diskVersion = diskBundleVersion(),
+              compareVersions(diskVersion, runningBundleVersion()) == .orderedDescending else {
+            return false
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["-n", Bundle.main.bundlePath]
+
+        do {
+            try process.run()
+            isRelaunchingForUpdate = true
+            NSApp.terminate(nil)
+            return true
+        } catch {
+            showRelaunchFailureAlert()
+            return false
+        }
+    }
+
+    private func runningBundleVersion() -> BundleVersion {
+        let info = Bundle.main.infoDictionary ?? [:]
+        return BundleVersion(
+            shortVersion: info["CFBundleShortVersionString"] as? String ?? "",
+            buildVersion: info["CFBundleVersion"] as? String ?? ""
+        )
+    }
+
+    private func diskBundleVersion() -> BundleVersion? {
+        let infoPath = Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist").path
+        guard let info = NSDictionary(contentsOfFile: infoPath) as? [String: Any] else { return nil }
+        return BundleVersion(
+            shortVersion: info["CFBundleShortVersionString"] as? String ?? "",
+            buildVersion: info["CFBundleVersion"] as? String ?? ""
+        )
+    }
+
+    private func compareVersions(_ lhs: BundleVersion, _ rhs: BundleVersion) -> ComparisonResult {
+        let short = lhs.shortVersion.compare(rhs.shortVersion, options: .numeric)
+        if short != .orderedSame { return short }
+        return lhs.buildVersion.compare(rhs.buildVersion, options: .numeric)
+    }
+
+    private func showRelaunchFailureAlert() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "已经更新到新版本"
+        alert.informativeText = "这次没能自动重新打开。请先退出，再重新打开 Codex 额度。"
+        alert.addButton(withTitle: "知道了")
+        alert.runModal()
     }
 
     private func showMenu() {
@@ -297,4 +366,9 @@ enum AppEntry {
         app.setActivationPolicy(.accessory)
         app.run()
     }
+}
+
+private struct BundleVersion {
+    let shortVersion: String
+    let buildVersion: String
 }

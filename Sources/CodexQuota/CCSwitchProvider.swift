@@ -2,16 +2,17 @@ import Foundation
 import SQLite3
 
 /// 从 CC Switch 的 sqlite 数据库中按域名找匹配的 provider 配置
-struct CCSwitchProvider {
+struct CCSwitchProvider: Equatable {
     let name: String
     let usageScriptCode: String     // 整段 JS：({ request: ..., extractor: ... })
     let apiKey: String?
     let baseUrl: String             // usage_script 里的 baseUrl，可能和 codex 的不完全相同
     let accessToken: String?
     let userId: String?
+    let timeoutSeconds: Double?
+    let isCurrent: Bool
 
-    /// 找到第一个 usage_script.baseUrl 的 host 与目标 host（或根域）匹配的 provider
-    static func find(matchingHost host: String, rootDomain: String) -> CCSwitchProvider? {
+    static func find(for codex: CodexConfig) -> CCSwitchProvider? {
         let dbPath = NSString(string: "~/.cc-switch/cc-switch.db").expandingTildeInPath
         guard FileManager.default.fileExists(atPath: dbPath) else { return nil }
 
@@ -20,24 +21,60 @@ struct CCSwitchProvider {
         defer { sqlite3_close(db) }
 
         var stmt: OpaquePointer?
-        // ORDER BY rowid DESC → 取最近添加的，保证多个同域 provider 时结果确定
-        let sql = "SELECT name, meta FROM providers WHERE meta LIKE '%usage_script%' ORDER BY rowid DESC"
+        // ORDER BY rowid DESC → 分数相同的时候，继续沿用“最近添加优先”
+        let sql = """
+        SELECT name, is_current, meta
+        FROM providers
+        WHERE meta LIKE '%usage_script%'
+        ORDER BY rowid DESC
+        """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
         defer { sqlite3_finalize(stmt) }
 
-        var rootMatch: CCSwitchProvider?   // 根域匹配候选，优先返回精确 host 匹配
+        var candidates: [CCSwitchProvider] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             guard let nameC = sqlite3_column_text(stmt, 0),
-                  let metaC = sqlite3_column_text(stmt, 1) else { continue }
-            let candidate = parse(name: String(cString: nameC), metaJson: String(cString: metaC))
-            guard let candidate else { continue }
-            guard let candHost = URL(string: candidate.baseUrl)?.host?.lowercased() else { continue }
-            if candHost == host { return candidate }           // 精确匹配，直接返回
-            if rootMatch == nil && hostMatchesRoot(candHost, rootDomain) {
-                rootMatch = candidate
+                  let metaC = sqlite3_column_text(stmt, 2) else { continue }
+            let isCurrent = sqlite3_column_int(stmt, 1) != 0
+            let candidate = parse(
+                name: String(cString: nameC),
+                isCurrent: isCurrent,
+                metaJson: String(cString: metaC)
+            )
+            if let candidate { candidates.append(candidate) }
+        }
+        return bestMatch(from: candidates, codex: codex)
+    }
+
+    private static func bestMatch(from candidates: [CCSwitchProvider], codex: CodexConfig) -> CCSwitchProvider? {
+        var best: (provider: CCSwitchProvider, score: Int)?
+        for candidate in candidates {
+            guard let score = matchScore(for: candidate, codex: codex) else { continue }
+            if best == nil || score > best!.score {
+                best = (candidate, score)
             }
         }
-        return rootMatch
+        return best?.provider
+    }
+
+    private static func matchScore(for candidate: CCSwitchProvider, codex: CodexConfig) -> Int? {
+        guard let candHost = URL(string: candidate.baseUrl)?.host?.lowercased() else { return nil }
+        let exactHost = candHost == codex.host
+        let rootMatch = !exactHost && hostMatchesRoot(candHost, codex.rootDomain)
+        guard exactHost || rootMatch else { return nil }
+
+        var score = exactHost ? 400 : 200
+        if normalizeURL(candidate.baseUrl) == codex.normalizedBaseURL { score += 120 }
+        if normalize(candidate.name) == normalize(codex.providerName) { score += 80 }
+        if candidate.isCurrent { score += 40 }
+
+        let activeApiKey = codex.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !activeApiKey.isEmpty,
+           let candidateApiKey = candidate.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+           candidateApiKey == activeApiKey {
+            score += 160
+        }
+        return score
     }
 
     private static func hostMatchesRoot(_ host: String, _ root: String) -> Bool {
@@ -45,7 +82,25 @@ struct CCSwitchProvider {
         return host == root || host.hasSuffix(".\(root)")
     }
 
-    private static func parse(name: String, metaJson: String) -> CCSwitchProvider? {
+    private static func normalize(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func normalizeURL(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var components = URLComponents(string: trimmed) else {
+            return normalize(trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/")))
+        }
+        components.scheme = components.scheme?.lowercased()
+        components.host = components.host?.lowercased()
+        var normalized = components.string ?? trimmed
+        while normalized.hasSuffix("/") {
+            normalized.removeLast()
+        }
+        return normalized
+    }
+
+    private static func parse(name: String, isCurrent: Bool, metaJson: String) -> CCSwitchProvider? {
         guard let data = metaJson.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let us = root["usage_script"] as? [String: Any],
@@ -60,7 +115,22 @@ struct CCSwitchProvider {
             apiKey: us["apiKey"] as? String,
             baseUrl: baseUrl,
             accessToken: us["accessToken"] as? String,
-            userId: us["userId"] as? String
+            userId: us["userId"] as? String,
+            timeoutSeconds: doubleValue(us["timeout"]),
+            isCurrent: isCurrent
         )
+    }
+
+    private static func doubleValue(_ raw: Any?) -> Double? {
+        switch raw {
+        case let value as Double:
+            return value
+        case let value as NSNumber:
+            return value.doubleValue
+        case let value as String:
+            return Double(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        default:
+            return nil
+        }
     }
 }

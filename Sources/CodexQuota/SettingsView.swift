@@ -89,47 +89,104 @@ private struct MenuBarTab: View {
     @AppStorage(MenuBarSource.storageKey) private var menuBarSourceRaw: String = MenuBarSource.defaultValue.rawValue
     @AppStorage(MenuBarCount.storageKey) private var menuBarCountRaw: Int = MenuBarCount.defaultValue.rawValue
     @AppStorage(MenuBarCount.showLabelKey) private var showLabel: Bool = true
+    @AppStorage(MenuBarApiCount.storageKey) private var apiCountRaw: Int = MenuBarApiCount.defaultValue.rawValue
+    @AppStorage(MenuBarApiSource.storageKey) private var apiSourceRaw: String = MenuBarApiSource.defaultValue.rawValue
+    @AppStorage(MenuBarApiCount.showIconKey) private var apiShowIcon: Bool = true
+    @State private var thirdPartyApiOnly: Bool = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
+                if thirdPartyApiOnly {
+                    apiModeBody
+                } else {
+                    codexModeBody
+                }
+            }
+            .padding(20)
+        }
+        .onAppear {
+            thirdPartyApiOnly = CodexConfig.loadActive()?.isThirdPartyApiMode ?? false
+        }
+    }
+
+    private var apiModeBody: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text("显示额度数量")
+                Spacer()
+                Picker("", selection: $apiCountRaw) {
+                    ForEach(MenuBarApiCount.allCases) { c in
+                        Text(c.displayName).tag(c.rawValue)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: 240)
+            }
+
+            if apiCountRaw == MenuBarApiCount.one.rawValue {
                 HStack {
-                    Text("显示额度数量")
+                    Text("显示哪一条")
                     Spacer()
-                    Picker("", selection: $menuBarCountRaw) {
-                        ForEach(MenuBarCount.allCases) { c in
-                            Text(c.displayName).tag(c.rawValue)
+                    Picker("", selection: $apiSourceRaw) {
+                        ForEach(MenuBarApiSource.allCases) { s in
+                            Text(s.displayName).tag(s.rawValue)
                         }
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .frame(maxWidth: 240)
                 }
+            }
 
-                if menuBarCountRaw == MenuBarCount.one.rawValue {
-                    HStack {
-                        Text("显示哪一条")
-                        Spacer()
-                        Picker("", selection: $menuBarSourceRaw) {
-                            ForEach(MenuBarSource.allCases) { s in
-                                Text(s.displayName).tag(s.rawValue)
-                            }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(maxWidth: 240)
+            Toggle("显示金额前的小图标", isOn: $apiShowIcon)
+
+            Text(apiCountRaw == MenuBarApiCount.two.rawValue
+                 ? "同时显示两条，左边是已用，右边是剩余。"
+                 : "只显示一条额度。")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private var codexModeBody: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text("显示额度数量")
+                Spacer()
+                Picker("", selection: $menuBarCountRaw) {
+                    ForEach(MenuBarCount.allCases) { c in
+                        Text(c.displayName).tag(c.rawValue)
                     }
                 }
-
-                Toggle("显示 H/W 小图标", isOn: $showLabel)
-
-                Text(menuBarCountRaw == MenuBarCount.two.rawValue
-                     ? "同时显示两条额度，左边是 5 小时，右边是周。"
-                     : "只显示一条额度。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: 240)
             }
-            .padding(20)
+
+            if menuBarCountRaw == MenuBarCount.one.rawValue {
+                HStack {
+                    Text("显示哪一条")
+                    Spacer()
+                    Picker("", selection: $menuBarSourceRaw) {
+                        ForEach(MenuBarSource.allCases) { s in
+                            Text(s.displayName).tag(s.rawValue)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 240)
+                }
+            }
+
+            Toggle("显示 H/W 小图标", isOn: $showLabel)
+
+            Text(menuBarCountRaw == MenuBarCount.two.rawValue
+                 ? "同时显示两条额度，左边是 5 小时，右边是周。"
+                 : "只显示一条额度。")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
         }
     }
 }

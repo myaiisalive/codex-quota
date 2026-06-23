@@ -41,3 +41,42 @@ enum MenuBarSource: String, CaseIterable, Identifiable {
         }
     }
 }
+
+// MARK: - 第三方 API 模式
+
+/// API 模式下菜单栏显示几条
+enum MenuBarApiCount: Int, CaseIterable, Identifiable {
+    case one = 1
+    case two = 2
+
+    static let storageKey = "menuBarApiCount"
+    static let defaultValue: MenuBarApiCount = .two
+    static let showIconKey = "menuBarApiShowIcon"
+
+    var id: Int { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .one: return "1 个"
+        case .two: return "2 个（已用 + 剩余）"
+        }
+    }
+}
+
+/// API 模式只显示 1 条时，显示哪一条
+enum MenuBarApiSource: String, CaseIterable, Identifiable {
+    case used
+    case remaining
+
+    static let storageKey = "menuBarApiSource"
+    static let defaultValue: MenuBarApiSource = .remaining
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .used:      return "已用"
+        case .remaining: return "剩余"
+        }
+    }
+}

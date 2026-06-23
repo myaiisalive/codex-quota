@@ -52,6 +52,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateStatusTitle() {
+        // 第三方 API 模式：菜单栏显示「↗ 已用 · $ 剩余」
+        if store.thirdPartyApiOnly {
+            if let bal = store.apiBalance {
+                let countRaw = UserDefaults.standard.integer(forKey: MenuBarApiCount.storageKey)
+                let count = MenuBarApiCount(rawValue: countRaw) ?? MenuBarApiCount.defaultValue
+                let showIcon: Bool = {
+                    if UserDefaults.standard.object(forKey: MenuBarApiCount.showIconKey) == nil { return true }
+                    return UserDefaults.standard.bool(forKey: MenuBarApiCount.showIconKey)
+                }()
+                let s = NSMutableAttributedString()
+                switch count {
+                case .two:
+                    if let used = bal.used {
+                        if showIcon { s.append(symbolImage("arrow.up.forward", size: 8)) }
+                        s.append(NSAttributedString(string: "\(showIcon ? " " : "")\(formatMoney(used))", attributes: smallAttrs()))
+                    }
+                    if bal.used != nil && bal.remaining != nil {
+                        s.append(NSAttributedString(string: " · ", attributes: smallAttrs(secondary: true)))
+                    }
+                    if let r = bal.remaining {
+                        if showIcon { s.append(symbolImage("dollarsign", size: 8)) }
+                        s.append(NSAttributedString(string: "\(showIcon ? " " : "")\(formatMoney(r))", attributes: smallAttrs()))
+                    }
+                case .one:
+                    let source = MenuBarApiSource(
+                        rawValue: UserDefaults.standard.string(forKey: MenuBarApiSource.storageKey) ?? ""
+                    ) ?? MenuBarApiSource.defaultValue
+                    switch source {
+                    case .used:
+                        if let used = bal.used {
+                            if showIcon { s.append(symbolImage("arrow.up.forward", size: 8)) }
+                            s.append(NSAttributedString(string: "\(showIcon ? " " : "")\(formatMoney(used))", attributes: smallAttrs()))
+                        }
+                    case .remaining:
+                        if let r = bal.remaining {
+                            if showIcon { s.append(symbolImage("dollarsign", size: 8)) }
+                            s.append(NSAttributedString(string: "\(showIcon ? " " : "")\(formatMoney(r))", attributes: smallAttrs()))
+                        }
+                    }
+                }
+                if s.length == 0 {
+                    setStatusTitle(plain: "--")
+                } else {
+                    statusItem?.button?.attributedTitle = s
+                }
+            } else {
+                setStatusTitle(plain: "--")
+            }
+            return
+        }
+
         guard let snap = store.snapshot else {
             setStatusTitle(plain: "--")
             return
@@ -109,6 +160,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ]
     }
 
+    /// 比 baseAttrs 字号小一点，用于第三方 API 模式（一行要装很多东西）
+    private func smallAttrs(secondary: Bool = false) -> [NSAttributedString.Key: Any] {
+        let font = NSFont.menuBarFont(ofSize: 11)
+        return [
+            .font: font,
+            .foregroundColor: secondary ? NSColor.secondaryLabelColor : NSColor.labelColor
+        ]
+    }
+
+    private func symbolImage(_ name: String, size: CGFloat) -> NSAttributedString {
+        let attachment = NSTextAttachment()
+        let cfg = NSImage.SymbolConfiguration(pointSize: size, weight: .semibold)
+        if let img = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(cfg) {
+            img.isTemplate = true
+            attachment.image = img
+        }
+        return NSAttributedString(attachment: attachment)
+    }
+
+    private func formatMoney(_ v: Double) -> String {
+        String(format: "%.2f", v)
+    }
+
     /// 一个「图标 + 百分比」组合
     private func part(_ w: RateWindow?, symbol: String, showLabel: Bool) -> NSAttributedString {
         let result = NSMutableAttributedString()
@@ -144,7 +219,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 onSizeChange: { [weak p] size in p?.applyContentSize(size) },
                 onHide: { [weak p] in p?.orderOut(nil) },
                 onMinimize: { [weak self] in self?.minimizeToDock() },
-                onRefresh: { [weak self] in self?.store.reload() },
+                onRefresh: { [weak self] in
+                    self?.store.reload()
+                    self?.store.reloadApiBalance()
+                },
                 onAlphaChange: { [weak p] alpha in p?.setAlpha(alpha) }
             )
             p.setRoot(view)
@@ -202,7 +280,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    @objc private func refreshNow() { store.reload() }
+    @objc private func refreshNow() {
+        store.reload()
+        store.reloadApiBalance()
+    }
     @objc private func quit() { NSApp.terminate(nil) }
 }
 

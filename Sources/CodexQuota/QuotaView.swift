@@ -83,7 +83,7 @@ struct QuotaView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                if let plan = store.snapshot?.limits.planType {
+                if !store.thirdPartyApiOnly, let plan = store.snapshot?.limits.planType {
                     Text(plan.uppercased())
                         .font(.system(size: 9, weight: .bold))
                         .padding(.horizontal, 6).padding(.vertical, 2)
@@ -95,11 +95,24 @@ struct QuotaView: View {
             }
 
             if let snap = store.snapshot {
-                if let p = snap.limits.primary { QuotaRow(window: p) }
-                if let s = snap.limits.secondary { QuotaRow(window: s) }
+                if !store.thirdPartyApiOnly {
+                    if let p = snap.limits.primary { QuotaRow(window: p) }
+                    if let s = snap.limits.secondary { QuotaRow(window: s) }
+                }
+                if let bal = store.apiBalance {
+                    ApiBalanceRow(balance: bal)
+                } else if store.thirdPartyApiOnly, let msg = store.apiBalanceError {
+                    Text(msg)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: 220, alignment: .leading)
+                }
                 Text("更新于 \(timeAgo(snap.capturedAt))")
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
+            } else if store.thirdPartyApiOnly, let bal = store.apiBalance {
+                // 第三方 API 模式且 sessions 还没数据：只显示余额
+                ApiBalanceRow(balance: bal)
             } else if let err = store.lastError {
                 Text(err)
                     .font(.system(size: 11))
@@ -117,11 +130,13 @@ struct QuotaView: View {
     private var collapsedBody: some View {
         HStack(spacing: 8) {
             trafficLights
-            Image(systemName: "gauge.with.needle")
+            Image(systemName: store.thirdPartyApiOnly ? "creditcard" : "gauge.with.needle")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
 
-            if let snap = store.snapshot {
+            if store.thirdPartyApiOnly, let bal = store.apiBalance {
+                collapsedBalance(bal)
+            } else if let snap = store.snapshot {
                 let ws = windows(snap)
                 HStack(spacing: 8) {
                     ForEach(Array(ws.enumerated()), id: \.offset) { idx, w in
@@ -148,6 +163,46 @@ struct QuotaView: View {
             collapseButton
         }
         .fixedSize()
+    }
+
+    private func collapsedBalance(_ bal: UsageScriptRunner.Balance) -> some View {
+        HStack(spacing: 6) {
+            if let used = bal.used {
+                HStack(spacing: 3) {
+                    Text("已用")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Text(formatMoney(used))
+                        .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if bal.used != nil && bal.remaining != nil {
+                Text("·").font(.system(size: 10)).foregroundStyle(.tertiary)
+            }
+            if let r = bal.remaining {
+                HStack(spacing: 3) {
+                    Text("剩")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Text("\(formatMoney(r)) \(bal.unit ?? "")")
+                        .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(balanceColor(r, total: bal.total))
+                }
+            }
+        }
+    }
+
+    private func formatMoney(_ v: Double) -> String {
+        String(format: "%.2f", v)
+    }
+
+    private func balanceColor(_ remaining: Double, total: Double?) -> Color {
+        guard let total, total > 0 else { return .primary }
+        let pct = remaining / total * 100
+        if pct > 50 { return .green }
+        if pct > 20 { return .orange }
+        return .red
     }
 
     // MARK: - Header buttons
@@ -216,6 +271,46 @@ struct QuotaView: View {
         if s < 3600 { return "\(s/60) 分钟前" }
         if s < 86400 { return "\(s/3600) 小时前" }
         return "\(s/86400) 天前"
+    }
+}
+
+private struct ApiBalanceRow: View {
+    let balance: UsageScriptRunner.Balance
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Image(systemName: "creditcard")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Text(balance.providerName)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                Spacer()
+                if let r = balance.remaining {
+                    Text("剩 \(format(r)) \(balance.unit ?? "")")
+                        .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(remainingColor(r, total: balance.total))
+                }
+            }
+            if let used = balance.used, let total = balance.total, total > 0 {
+                Text("已用 \(format(used)) / \(format(total))")
+                    .font(.system(size: 10).monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private func format(_ v: Double) -> String {
+        String(format: "%.2f", v)
+    }
+
+    private func remainingColor(_ remaining: Double, total: Double?) -> Color {
+        guard let total, total > 0 else { return .primary }
+        let pct = remaining / total * 100
+        if pct > 50 { return .green }
+        if pct > 20 { return .orange }
+        return .red
     }
 }
 

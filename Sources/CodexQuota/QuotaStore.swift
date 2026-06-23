@@ -6,9 +6,15 @@ import Combine
 final class QuotaStore: ObservableObject {
     @Published private(set) var snapshot: QuotaSnapshot?
     @Published private(set) var lastError: String?
+    @Published private(set) var apiBalance: UsageScriptRunner.Balance?
+    @Published private(set) var apiBalanceError: String?
+    /// 第三方 API 模式：auth.json 有 key 且 base_url 不是 OpenAI 官方
+    /// 此时只显示 API 余额，不显示 5 小时/周
+    @Published private(set) var thirdPartyApiOnly: Bool = false
 
     private var watcher: SessionsWatcher?
     private var timer: Timer?
+    private var balanceTimer: Timer?
     private var defaultsObserver: NSObjectProtocol?
 
     /// 当前使用的刷新间隔（秒）。默认 30s。
@@ -28,6 +34,8 @@ final class QuotaStore: ObservableObject {
         )
         watcher?.start()
         rebuildTimer()
+        reloadApiBalance()
+        rebuildBalanceTimer()
 
         // 监听设置变化，自动重建 timer
         defaultsObserver = NotificationCenter.default.addObserver(
@@ -39,11 +47,51 @@ final class QuotaStore: ObservableObject {
         }
     }
 
+    private func rebuildBalanceTimer() {
+        balanceTimer?.invalidate()
+        balanceTimer = Timer.scheduledTimer(withTimeInterval: currentInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.reloadApiBalance() }
+        }
+    }
+
+    func reloadApiBalance() {
+        guard let codex = CodexConfig.loadActive() else {
+            self.apiBalance = nil
+            self.apiBalanceError = nil
+            self.thirdPartyApiOnly = false
+            return
+        }
+        self.thirdPartyApiOnly = codex.isThirdPartyApiMode
+        guard let provider = CCSwitchProvider.find(
+            matchingHost: codex.host,
+            rootDomain: codex.rootDomain
+        ) else {
+            self.apiBalance = nil
+            self.apiBalanceError = "CC Switch 中未找到 \(codex.host) 的配置"
+            return
+        }
+
+        Task { [weak self] in
+            do {
+                let balance = try await UsageScriptRunner.run(provider: provider)
+                await MainActor.run {
+                    self?.apiBalance = balance
+                    self?.apiBalanceError = balance.isValid ? nil : (balance.invalidMessage ?? "余额查询失败")
+                }
+            } catch {
+                await MainActor.run {
+                    self?.apiBalanceError = "余额查询失败：\(error)"
+                }
+            }
+        }
+    }
+
     private var lastBuiltInterval: Double = 0
 
     private func rebuildTimerIfNeeded() {
         if abs(currentInterval - lastBuiltInterval) > 0.01 {
             rebuildTimer()
+            rebuildBalanceTimer()
         }
     }
 

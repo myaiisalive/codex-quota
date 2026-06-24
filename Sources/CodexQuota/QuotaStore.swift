@@ -113,14 +113,17 @@ final class QuotaStore: ObservableObject {
 
     func reload() {
         Task {
-            let snap = await Task.detached(priority: .utility) {
-                QuotaReader.loadLatest()
+            let snap = await Task.detached(priority: .utility) { () -> QuotaSnapshot? in
+                if let official = await OfficialQuotaReader.loadLatest() {
+                    return official
+                }
+                return QuotaReader.loadLatest()
             }.value
             if let snap {
                 self.snapshot = snap
                 self.lastError = nil
             } else if self.snapshot == nil {
-                self.lastError = "未找到 ~/.codex/sessions 中的额度数据，请先运行一次 codex"
+                self.lastError = "还没有读到额度，请先打开一次 Codex 并确认已登录"
             }
         }
     }

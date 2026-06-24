@@ -26,9 +26,9 @@ func render(size: Int) -> NSImage {
     ctx.drawLinearGradient(grad, start: .zero, end: CGPoint(x: 0, y: s), options: [])
 
     // 仪表盘弧
-    let cx = s / 2, cy = s * 0.56
-    let r = s * 0.32
-    let lineW = s * 0.07
+    let cx = s / 2, cy = s * 0.55
+    let r = s * 0.26
+    let lineW = s * 0.062
     ctx.setLineCap(.round)
     ctx.setLineWidth(lineW)
 

@@ -21,6 +21,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var needsRestoredPanelPosition = false
     private var edgeBarNeedsReentry = false
     private var pendingEdgeBarReentryCheck = false
+    private var isRestoringFromEdgeBar = false
+    private var postRestoreGuardFrame: NSRect?
+    private var postRestoreGuardTask: DispatchWorkItem?
 
     private var edgeSnapEnabled: Bool {
         UserDefaults.standard.bool(forKey: FloatingPanelState.edgeSnapEnabledKey)
@@ -316,26 +319,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         } else if needsRestoredPanelPosition {
             applyRestoredPanelFrame(panel)
             needsRestoredPanelPosition = false
+            isPanelHovered = panelContainsMouse(panel)
+            isRestoringFromEdgeBar = false
+            if isPanelHovered {
+                clearPostRestoreGuard()
+            } else {
+                armPostRestoreGuardIfNeeded()
+            }
         } else {
             refreshEdgeAttachmentForCurrentPosition(panel)
         }
     }
 
     private func handlePanelHover(_ isOver: Bool) {
-        isPanelHovered = isOver
+        let actuallyHovering = isOver || panelContainsMouse()
+        isPanelHovered = actuallyHovering
         guard edgeSnapEnabled else { return }
         edgeCollapseTask?.cancel()
         edgeCollapseTask = nil
 
-        if isOver {
+        if actuallyHovering {
             if panelState.isEdgeBarVisible {
                 guard !edgeBarNeedsReentry else { return }
                 edgeBarNeedsReentry = false
+                isRestoringFromEdgeBar = true
+                postRestoreGuardFrame = panel?.frame.insetBy(dx: -2, dy: -2)
                 needsRestoredPanelPosition = true
                 panelState.showsEdgeBar = false
+            } else {
+                clearPostRestoreGuard()
             }
             return
         }
+
+        guard !isRestoringFromEdgeBar, postRestoreGuardFrame == nil else { return }
 
         if panelState.isEdgeBarVisible {
             edgeBarNeedsReentry = false
@@ -362,6 +379,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             panelState.showsEdgeBar = false
             edgeBarNeedsReentry = false
             pendingEdgeBarReentryCheck = false
+            isRestoringFromEdgeBar = false
+            clearPostRestoreGuard()
             return
         }
         let edge = pendingAttachedEdge ?? nearestEdge(for: frame)
@@ -372,10 +391,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             panelState.showsEdgeBar = false
             edgeBarNeedsReentry = false
             pendingEdgeBarReentryCheck = false
+            isRestoringFromEdgeBar = false
+            clearPostRestoreGuard()
             return
         }
         panelState.attachedEdge = edge
         panelState.showsEdgeBar = false
+        isRestoringFromEdgeBar = false
+        clearPostRestoreGuard()
         scheduleEdgeCollapseIfNeeded()
     }
 
@@ -391,6 +414,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             panelState.showsEdgeBar = false
             edgeBarNeedsReentry = false
             pendingEdgeBarReentryCheck = false
+            isRestoringFromEdgeBar = false
+            clearPostRestoreGuard()
             return
         }
         refreshEdgeAttachmentForCurrentPosition()
@@ -402,6 +427,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard edgeSnapEnabled,
               !isDraggingPanel,
               !isPanelHovered,
+              !panelContainsMouse(),
+              postRestoreGuardFrame == nil,
               panelState.attachedEdge != nil,
               !panelState.isEdgeBarVisible else {
             return
@@ -412,6 +439,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                   self.edgeSnapEnabled,
                   !self.isDraggingPanel,
                   !self.isPanelHovered,
+                  !self.panelContainsMouse(),
+                  self.postRestoreGuardFrame == nil,
                   self.panelState.attachedEdge != nil,
                   !self.panelState.isEdgeBarVisible else {
                 return
@@ -422,10 +451,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             self.edgeBarNeedsReentry = requiresEdgeBarReentry
             self.pendingEdgeBarReentryCheck = requiresEdgeBarReentry
+            self.clearPostRestoreGuard()
             self.panelState.showsEdgeBar = true
         }
         edgeCollapseTask = task
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: task)
+    }
+
+    private func armPostRestoreGuardIfNeeded() {
+        postRestoreGuardTask?.cancel()
+        postRestoreGuardTask = nil
+        guard edgeSnapEnabled,
+              !isDraggingPanel,
+              postRestoreGuardFrame != nil,
+              panelState.attachedEdge != nil,
+              !panelState.isEdgeBarVisible else {
+            clearPostRestoreGuard()
+            return
+        }
+
+        let task = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.edgeSnapEnabled,
+                  !self.isDraggingPanel,
+                  self.postRestoreGuardFrame != nil,
+                  self.panelState.attachedEdge != nil,
+                  !self.panelState.isEdgeBarVisible else {
+                self.clearPostRestoreGuard()
+                return
+            }
+
+            if self.panelContainsMouse() {
+                self.isPanelHovered = true
+                self.clearPostRestoreGuard()
+                return
+            }
+
+            if let guardFrame = self.postRestoreGuardFrame,
+               guardFrame.contains(NSEvent.mouseLocation) {
+                self.armPostRestoreGuardIfNeeded()
+                return
+            }
+
+            self.isPanelHovered = false
+            self.clearPostRestoreGuard()
+            self.scheduleEdgeCollapseIfNeeded(requiresEdgeBarReentry: true)
+        }
+
+        postRestoreGuardTask = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: task)
+    }
+
+    private func clearPostRestoreGuard() {
+        postRestoreGuardTask?.cancel()
+        postRestoreGuardTask = nil
+        postRestoreGuardFrame = nil
     }
 
     private func refreshEdgeAttachmentForCurrentPosition(_ panel: FloatingPanel? = nil) {
@@ -466,6 +546,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if target.integral != panel.frame.integral {
             panel.setFrame(target, display: true, animate: false)
         }
+    }
+
+    private func panelContainsMouse(_ panel: FloatingPanel? = nil) -> Bool {
+        guard let panel = panel ?? self.panel else { return false }
+        return panel.frame.insetBy(dx: -1, dy: -1).contains(NSEvent.mouseLocation)
     }
 
     private func nearestEdge(for frame: NSRect) -> FloatingEdgeAttachment? {

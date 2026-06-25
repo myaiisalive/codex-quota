@@ -35,7 +35,6 @@ struct QuotaView: View {
                 .onChange(of: geo.size) { new in onSizeChange?(new) }
         })
         .animation(.easeInOut(duration: 0.15), value: collapsed)
-        .animation(.easeInOut(duration: 0.15), value: panelState.isEdgeBarVisible)
         .onChange(of: dimmed) { _ in pushAlpha() }
         .onChange(of: dimmedOpacity) { _ in pushAlpha() }
         .onHover { isOver in

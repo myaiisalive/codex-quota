@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct SettingsView: View {
+    @ObservedObject var updateManager: UpdateManager
+
     enum Tab: String, CaseIterable, Identifiable {
         case appearance, menuBar, refresh, about
         var id: String { rawValue }
@@ -43,7 +45,7 @@ struct SettingsView: View {
                 case .appearance: AppearanceTab()
                 case .menuBar:    MenuBarTab()
                 case .refresh:    RefreshTab()
-                case .about:      AboutTab()
+                case .about:      AboutTab(updateManager: updateManager)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -318,6 +320,8 @@ private struct RefreshTab: View {
 // MARK: - 关于
 
 private struct AboutTab: View {
+    @ObservedObject var updateManager: UpdateManager
+
     var body: some View {
         VStack(spacing: 10) {
             Spacer()
@@ -333,6 +337,8 @@ private struct AboutTab: View {
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
 
+            updateSection
+
             Link(destination: URL(string: "https://github.com/myaiisalive/codex-quota")!) {
                 HStack(spacing: 4) {
                     Image(systemName: "link")
@@ -342,7 +348,7 @@ private struct AboutTab: View {
                 }
             }
 
-            Text("本地读取额度数据，不联网。")
+            Text("额度数据仍是本地读取；只有检查新版本时才会联网访问 GitHub。")
                 .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
                 .padding(.top, 4)
@@ -354,10 +360,50 @@ private struct AboutTab: View {
     }
 
     private var appVersion: String {
-        let info = Bundle.main.infoDictionary
-        let v = info?["CFBundleShortVersionString"] as? String ?? "—"
-        let b = info?["CFBundleVersion"] as? String ?? ""
-        return b.isEmpty || b == v ? v : "\(v) (\(b))"
+        updateManager.currentVersionText
+    }
+
+    @ViewBuilder
+    private var updateSection: some View {
+        VStack(spacing: 8) {
+            Text(updateManager.statusText)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 320)
+
+            switch updateManager.state {
+            case .checking, .installing:
+                ProgressView()
+                    .controlSize(.small)
+            case .available:
+                HStack(spacing: 8) {
+                    Button("查看发布说明") {
+                        updateManager.openReleasePage()
+                    }
+                    Button(primaryActionTitle) {
+                        Task { @MainActor in
+                            try? await updateManager.performAvailableUpdate()
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            default:
+                Button("检查新版本") {
+                    Task { @MainActor in
+                        _ = await updateManager.checkForUpdates(force: true)
+                    }
+                }
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    private var primaryActionTitle: String {
+        if case .available(_, let method) = updateManager.state {
+            return method.primaryActionTitle
+        }
+        return "更新"
     }
 }
 

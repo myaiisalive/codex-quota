@@ -5,6 +5,7 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let store = QuotaStore()
     private let panelState = FloatingPanelState()
+    private let updateManager = UpdateManager()
     private var statusItem: NSStatusItem?
     private var panel: FloatingPanel?
     private var settingsWindow: NSWindow?
@@ -18,6 +19,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var isDraggingPanel = false
     private var restoredPanelTopLeft: NSPoint?
     private var needsRestoredPanelPosition = false
+    private var edgeBarNeedsReentry = false
+    private var pendingEdgeBarReentryCheck = false
 
     private var edgeSnapEnabled: Bool {
         UserDefaults.standard.bool(forKey: FloatingPanelState.edgeSnapEnabledKey)
@@ -47,6 +50,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         updateStatusTitle()
         syncEdgeSnapPreference()
+        Task { @MainActor in
+            _ = await updateManager.checkForUpdates(force: false)
+        }
     }
 
     /// 用户点 Dock 图标时回来：恢复浮窗，并把 Dock 图标移除
@@ -303,6 +309,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.applyContentSize(size)
         if edgeSnapEnabled, panelState.attachedEdge != nil, panelState.isEdgeBarVisible {
             applyAttachedEdgeFrame(panel)
+            if pendingEdgeBarReentryCheck {
+                edgeBarNeedsReentry = panel.frame.contains(NSEvent.mouseLocation)
+                pendingEdgeBarReentryCheck = false
+            }
         } else if needsRestoredPanelPosition {
             applyRestoredPanelFrame(panel)
             needsRestoredPanelPosition = false
@@ -319,13 +329,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         if isOver {
             if panelState.isEdgeBarVisible {
+                guard !edgeBarNeedsReentry else { return }
+                edgeBarNeedsReentry = false
                 needsRestoredPanelPosition = true
                 panelState.showsEdgeBar = false
             }
             return
         }
 
-        scheduleEdgeCollapseIfNeeded()
+        if panelState.isEdgeBarVisible {
+            edgeBarNeedsReentry = false
+        }
+        scheduleEdgeCollapseIfNeeded(requiresEdgeBarReentry: true)
     }
 
     private func handlePanelDragging(_ frame: NSRect) {
@@ -345,6 +360,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             pendingAttachedEdge = nil
             panelState.attachedEdge = nil
             panelState.showsEdgeBar = false
+            edgeBarNeedsReentry = false
+            pendingEdgeBarReentryCheck = false
             return
         }
         let edge = pendingAttachedEdge ?? nearestEdge(for: frame)
@@ -353,6 +370,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard let edge else {
             panelState.attachedEdge = nil
             panelState.showsEdgeBar = false
+            edgeBarNeedsReentry = false
+            pendingEdgeBarReentryCheck = false
             return
         }
         panelState.attachedEdge = edge
@@ -370,12 +389,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             needsRestoredPanelPosition = false
             panelState.attachedEdge = nil
             panelState.showsEdgeBar = false
+            edgeBarNeedsReentry = false
+            pendingEdgeBarReentryCheck = false
             return
         }
         refreshEdgeAttachmentForCurrentPosition()
     }
 
-    private func scheduleEdgeCollapseIfNeeded() {
+    private func scheduleEdgeCollapseIfNeeded(requiresEdgeBarReentry: Bool = false) {
         edgeCollapseTask?.cancel()
         edgeCollapseTask = nil
         guard edgeSnapEnabled,
@@ -399,6 +420,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.rememberRestoredPanelPosition(panel)
                 self.applyAttachedEdgeFrame(panel)
             }
+            self.edgeBarNeedsReentry = requiresEdgeBarReentry
+            self.pendingEdgeBarReentryCheck = requiresEdgeBarReentry
             self.panelState.showsEdgeBar = true
         }
         edgeCollapseTask = task
@@ -528,26 +551,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func runningBundleVersion() -> BundleVersion {
-        let info = Bundle.main.infoDictionary ?? [:]
-        return BundleVersion(
-            shortVersion: info["CFBundleShortVersionString"] as? String ?? "",
-            buildVersion: info["CFBundleVersion"] as? String ?? ""
-        )
+        BundleVersion.current
     }
 
     private func diskBundleVersion() -> BundleVersion? {
         let infoPath = Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist").path
         guard let info = NSDictionary(contentsOfFile: infoPath) as? [String: Any] else { return nil }
-        return BundleVersion(
-            shortVersion: info["CFBundleShortVersionString"] as? String ?? "",
-            buildVersion: info["CFBundleVersion"] as? String ?? ""
-        )
+        return BundleVersion(infoDictionary: info)
     }
 
     private func compareVersions(_ lhs: BundleVersion, _ rhs: BundleVersion) -> ComparisonResult {
-        let short = lhs.shortVersion.compare(rhs.shortVersion, options: .numeric)
-        if short != .orderedSame { return short }
-        return lhs.buildVersion.compare(rhs.buildVersion, options: .numeric)
+        lhs.compare(to: rhs)
     }
 
     private func showRelaunchFailureAlert() {
@@ -564,6 +578,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let refresh = NSMenuItem(title: "立即刷新", action: #selector(refreshNow), keyEquivalent: "r")
         refresh.target = self
         menu.addItem(refresh)
+        let update = NSMenuItem(title: updateManager.menuItemTitle, action: #selector(checkForUpdatesNow), keyEquivalent: "")
+        update.target = self
+        menu.addItem(update)
         let settings = NSMenuItem(title: "偏好设置…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
@@ -584,7 +601,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let host = NSHostingController(rootView: SettingsView())
+        let host = NSHostingController(rootView: SettingsView(updateManager: updateManager))
         let w = NSWindow(contentViewController: host)
         w.title = "偏好设置"
         w.styleMask = [.titled, .closable]
@@ -610,6 +627,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         store.reload()
         store.reloadApiBalance()
     }
+    @objc private func checkForUpdatesNow() {
+        Task { @MainActor in
+            if let available = updateManager.availableRelease {
+                showUpdateAlert(release: available.release, method: available.method)
+                return
+            }
+
+            let hasUpdate = await updateManager.checkForUpdates(force: true)
+            if hasUpdate, let available = updateManager.availableRelease {
+                showUpdateAlert(release: available.release, method: available.method)
+                return
+            }
+
+            switch updateManager.state {
+            case .upToDate:
+                showSimpleAlert(title: "已经是最新版本", message: "现在这台电脑上的 CodexQuota 已经是最新版本。")
+            case .failed(let message):
+                showSimpleAlert(title: "检查新版本失败", message: message)
+            default:
+                break
+            }
+        }
+    }
+
+    private func showUpdateAlert(release: UpdateManager.ReleaseInfo, method: UpdateManager.InstallMethod) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "发现新版本 \(release.version.shortVersion)"
+        alert.informativeText = method.summaryText
+        alert.addButton(withTitle: method.primaryActionTitle)
+        alert.addButton(withTitle: "查看发布说明")
+        alert.addButton(withTitle: "以后再说")
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        switch response {
+        case .alertFirstButtonReturn:
+            Task { @MainActor in
+                do {
+                    try await updateManager.performAvailableUpdate()
+                } catch {
+                    showSimpleAlert(
+                        title: "更新没完成",
+                        message: (error as? LocalizedError)?.errorDescription ?? "这次没有完成更新，请稍后再试。"
+                    )
+                }
+            }
+        case .alertSecondButtonReturn:
+            updateManager.openReleasePage()
+        default:
+            break
+        }
+    }
+
+    private func showSimpleAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "知道了")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
     @objc private func quit() { NSApp.terminate(nil) }
 }
 
@@ -623,9 +702,4 @@ enum AppEntry {
         app.setActivationPolicy(.accessory)
         app.run()
     }
-}
-
-private struct BundleVersion {
-    let shortVersion: String
-    let buildVersion: String
 }

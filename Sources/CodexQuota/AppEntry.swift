@@ -2,14 +2,26 @@ import AppKit
 import SwiftUI
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let store = QuotaStore()
+    private let panelState = FloatingPanelState()
     private var statusItem: NSStatusItem?
     private var panel: FloatingPanel?
     private var settingsWindow: NSWindow?
     private var cancellable: Any?
     private var minimizedToDock = false
+    private var settingsWindowShown = false
     private var isRelaunchingForUpdate = false
+    private var edgeCollapseTask: DispatchWorkItem?
+    private var pendingAttachedEdge: FloatingEdgeAttachment?
+    private var isPanelHovered = false
+    private var isDraggingPanel = false
+    private var restoredPanelTopLeft: NSPoint?
+    private var needsRestoredPanelPosition = false
+
+    private var edgeSnapEnabled: Bool {
+        UserDefaults.standard.bool(forKey: FloatingPanelState.edgeSnapEnabledKey)
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         store.start()
@@ -28,9 +40,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.updateStatusTitle() }
+            Task { @MainActor in
+                self?.updateStatusTitle()
+                self?.syncEdgeSnapPreference()
+            }
         }
         updateStatusTitle()
+        syncEdgeSnapPreference()
     }
 
     /// 用户点 Dock 图标时回来：恢复浮窗，并把 Dock 图标移除
@@ -45,6 +61,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if relaunchIfInstalledVersionIsNewer() { return }
         refreshAll()
         if minimizedToDock { restoreFromDock() }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        persistPanelPositionForNextLaunch()
     }
 
     private func setupStatusItem() {
@@ -223,19 +243,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let p = FloatingPanel()
             let view = QuotaView(
                 store: store,
-                onSizeChange: { [weak p] size in p?.applyContentSize(size) },
+                panelState: panelState,
+                onSizeChange: { [weak self, weak p] size in
+                    self?.handlePanelSizeChange(size, panel: p)
+                },
                 onHide: { [weak p] in p?.orderOut(nil) },
                 onMinimize: { [weak self] in self?.minimizeToDock() },
                 onRefresh: { [weak self] in
                     self?.store.reload()
                     self?.store.reloadApiBalance()
                 },
-                onAlphaChange: { [weak p] alpha in p?.setAlpha(alpha) }
+                onAlphaChange: { [weak p] alpha in p?.setAlpha(alpha) },
+                onHoverChange: { [weak self] isOver in
+                    self?.handlePanelHover(isOver)
+                }
             )
             p.setRoot(view)
+            p.onDragging = { [weak self] frame in
+                Task { @MainActor in
+                    self?.handlePanelDragging(frame)
+                }
+            }
+            p.onDragEnded = { [weak self] frame in
+                Task { @MainActor in
+                    self?.handlePanelDragEnded(frame)
+                }
+            }
             panel = p
         }
         panel?.orderFrontRegardless()
+        refreshEdgeAttachmentForCurrentPosition()
         if refreshWhenBecomingVisible {
             refreshAll()
         }
@@ -245,7 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func minimizeToDock() {
         guard !minimizedToDock else { return }
         minimizedToDock = true
-        NSApp.setActivationPolicy(.regular)
+        updateActivationPolicy()
         panel?.orderOut(nil)
     }
 
@@ -253,7 +290,214 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func restoreFromDock() {
         minimizedToDock = false
         showPanel(refreshWhenBecomingVisible: true)
-        NSApp.setActivationPolicy(.accessory)
+        updateActivationPolicy()
+    }
+
+    private func updateActivationPolicy() {
+        let shouldShowDockIcon = minimizedToDock || settingsWindowShown
+        NSApp.setActivationPolicy(shouldShowDockIcon ? .regular : .accessory)
+    }
+
+    private func handlePanelSizeChange(_ size: CGSize, panel: FloatingPanel?) {
+        guard let panel else { return }
+        panel.applyContentSize(size)
+        if edgeSnapEnabled, panelState.attachedEdge != nil, panelState.isEdgeBarVisible {
+            applyAttachedEdgeFrame(panel)
+        } else if needsRestoredPanelPosition {
+            applyRestoredPanelFrame(panel)
+            needsRestoredPanelPosition = false
+        } else {
+            refreshEdgeAttachmentForCurrentPosition(panel)
+        }
+    }
+
+    private func handlePanelHover(_ isOver: Bool) {
+        isPanelHovered = isOver
+        guard edgeSnapEnabled else { return }
+        edgeCollapseTask?.cancel()
+        edgeCollapseTask = nil
+
+        if isOver {
+            if panelState.isEdgeBarVisible {
+                needsRestoredPanelPosition = true
+                panelState.showsEdgeBar = false
+            }
+            return
+        }
+
+        scheduleEdgeCollapseIfNeeded()
+    }
+
+    private func handlePanelDragging(_ frame: NSRect) {
+        guard edgeSnapEnabled else {
+            pendingAttachedEdge = nil
+            return
+        }
+        isDraggingPanel = true
+        edgeCollapseTask?.cancel()
+        edgeCollapseTask = nil
+        pendingAttachedEdge = nearestEdge(for: frame)
+    }
+
+    private func handlePanelDragEnded(_ frame: NSRect) {
+        isDraggingPanel = false
+        guard edgeSnapEnabled else {
+            pendingAttachedEdge = nil
+            panelState.attachedEdge = nil
+            panelState.showsEdgeBar = false
+            return
+        }
+        let edge = pendingAttachedEdge ?? nearestEdge(for: frame)
+        pendingAttachedEdge = nil
+
+        guard let edge else {
+            panelState.attachedEdge = nil
+            panelState.showsEdgeBar = false
+            return
+        }
+        panelState.attachedEdge = edge
+        panelState.showsEdgeBar = false
+        scheduleEdgeCollapseIfNeeded()
+    }
+
+    private func syncEdgeSnapPreference() {
+        guard edgeSnapEnabled else {
+            pendingAttachedEdge = nil
+            edgeCollapseTask?.cancel()
+            edgeCollapseTask = nil
+            isDraggingPanel = false
+            restoredPanelTopLeft = nil
+            needsRestoredPanelPosition = false
+            panelState.attachedEdge = nil
+            panelState.showsEdgeBar = false
+            return
+        }
+        refreshEdgeAttachmentForCurrentPosition()
+    }
+
+    private func scheduleEdgeCollapseIfNeeded() {
+        edgeCollapseTask?.cancel()
+        edgeCollapseTask = nil
+        guard edgeSnapEnabled,
+              !isDraggingPanel,
+              !isPanelHovered,
+              panelState.attachedEdge != nil,
+              !panelState.isEdgeBarVisible else {
+            return
+        }
+
+        let task = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.edgeSnapEnabled,
+                  !self.isDraggingPanel,
+                  !self.isPanelHovered,
+                  self.panelState.attachedEdge != nil,
+                  !self.panelState.isEdgeBarVisible else {
+                return
+            }
+            if let panel = self.panel {
+                self.rememberRestoredPanelPosition(panel)
+                self.applyAttachedEdgeFrame(panel)
+            }
+            self.panelState.showsEdgeBar = true
+        }
+        edgeCollapseTask = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: task)
+    }
+
+    private func refreshEdgeAttachmentForCurrentPosition(_ panel: FloatingPanel? = nil) {
+        guard edgeSnapEnabled, !isDraggingPanel else { return }
+        guard let panel = panel ?? self.panel else { return }
+        guard !panelState.isEdgeBarVisible else {
+            applyAttachedEdgeFrame(panel)
+            return
+        }
+        guard panelState.attachedEdge == nil else { return }
+        guard let edge = nearestEdge(for: panel.frame) else { return }
+        panelState.attachedEdge = edge
+        panelState.showsEdgeBar = false
+        scheduleEdgeCollapseIfNeeded()
+    }
+
+    private func persistPanelPositionForNextLaunch() {
+        if panelState.isEdgeBarVisible, let restoredPanelTopLeft {
+            FloatingPanel.persistTopLeft(restoredPanelTopLeft)
+            return
+        }
+        guard let panel else { return }
+        FloatingPanel.persistTopLeft(NSPoint(x: panel.frame.minX, y: panel.frame.maxY))
+    }
+
+    private func rememberRestoredPanelPosition(_ panel: FloatingPanel) {
+        restoredPanelTopLeft = NSPoint(x: panel.frame.minX, y: panel.frame.maxY)
+    }
+
+    private func applyRestoredPanelFrame(_ panel: FloatingPanel) {
+        guard let topLeft = restoredPanelTopLeft else { return }
+        let target = NSRect(
+            x: topLeft.x,
+            y: topLeft.y - panel.frame.height,
+            width: panel.frame.width,
+            height: panel.frame.height
+        )
+        if target.integral != panel.frame.integral {
+            panel.setFrame(target, display: true, animate: false)
+        }
+    }
+
+    private func nearestEdge(for frame: NSRect) -> FloatingEdgeAttachment? {
+        guard let visible = visibleFrame(for: frame) else { return nil }
+        let threshold: CGFloat = 56
+        let distances: [(FloatingEdgeAttachment, CGFloat)] = [
+            (.left, frame.minX <= visible.minX ? 0 : frame.minX - visible.minX),
+            (.right, frame.maxX >= visible.maxX ? 0 : visible.maxX - frame.maxX),
+            (.top, frame.maxY >= visible.maxY ? 0 : visible.maxY - frame.maxY),
+            (.bottom, frame.minY <= visible.minY ? 0 : frame.minY - visible.minY)
+        ]
+        guard let closest = distances.min(by: { $0.1 < $1.1 }),
+              closest.1 <= threshold else {
+            return nil
+        }
+        return closest.0
+    }
+
+    private func visibleFrame(for frame: NSRect) -> NSRect? {
+        let probe = NSPoint(x: frame.midX, y: frame.midY)
+        if let screen = NSScreen.screens.first(where: { $0.visibleFrame.contains(probe) || $0.frame.contains(probe) }) {
+            return screen.visibleFrame
+        }
+        return panel?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+    }
+
+    private func applyAttachedEdgeFrame(_ panel: FloatingPanel) {
+        guard let edge = panelState.attachedEdge,
+              let visible = panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame else {
+            return
+        }
+
+        let current = panel.frame
+        let targetSize = current.size
+        let origin: NSPoint
+
+        switch edge {
+        case .left:
+            let y = min(max(current.midY - targetSize.height / 2, visible.minY), visible.maxY - targetSize.height)
+            origin = NSPoint(x: visible.minX, y: y)
+        case .right:
+            let y = min(max(current.midY - targetSize.height / 2, visible.minY), visible.maxY - targetSize.height)
+            origin = NSPoint(x: visible.maxX - targetSize.width, y: y)
+        case .top:
+            let x = min(max(current.midX - targetSize.width / 2, visible.minX), visible.maxX - targetSize.width)
+            origin = NSPoint(x: x, y: visible.maxY - targetSize.height)
+        case .bottom:
+            let x = min(max(current.midX - targetSize.width / 2, visible.minX), visible.maxX - targetSize.width)
+            origin = NSPoint(x: x, y: visible.minY)
+        }
+
+        let target = NSRect(origin: origin, size: targetSize)
+        if target.integral != current.integral {
+            panel.setFrame(target, display: true, animate: false)
+        }
     }
 
     private func refreshAll() {
@@ -334,6 +578,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() {
         if let w = settingsWindow {
+            settingsWindowShown = true
+            updateActivationPolicy()
             w.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -343,10 +589,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         w.title = "偏好设置"
         w.styleMask = [.titled, .closable]
         w.isReleasedWhenClosed = false
+        w.delegate = self
+        w.setContentSize(NSSize(width: 620, height: 460))
+        w.minSize = NSSize(width: 620, height: 460)
         w.center()
         settingsWindow = w
+        settingsWindowShown = true
+        updateActivationPolicy()
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard notification.object as AnyObject? === settingsWindow else { return }
+        settingsWindowShown = false
+        updateActivationPolicy()
     }
 
     @objc private func refreshNow() {

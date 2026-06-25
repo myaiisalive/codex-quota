@@ -4,6 +4,8 @@ import SwiftUI
 struct TrafficLightButton: View {
     let color: Color
     let glyph: String           // SF Symbol 名
+    var dotSize: CGFloat = 12
+    var hitSize: CGFloat = 12
     let action: () -> Void
     @State private var hovering = false
 
@@ -15,11 +17,12 @@ struct TrafficLightButton: View {
                     .overlay(Circle().stroke(Color.black.opacity(0.18), lineWidth: 0.5))
                 if hovering {
                     Image(systemName: glyph)
-                        .font(.system(size: 7, weight: .heavy))
+                        .font(.system(size: max(7, dotSize * 0.58), weight: .heavy))
                         .foregroundStyle(.black.opacity(0.55))
                 }
             }
-            .frame(width: 12, height: 12)
+            .frame(width: dotSize, height: dotSize)
+            .frame(width: hitSize, height: hitSize)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

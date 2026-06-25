@@ -48,19 +48,51 @@ struct SettingsView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: 480, height: 340)
+        .frame(width: 620, height: 460)
     }
 }
 
 // MARK: - 外观
 
 private struct AppearanceTab: View {
+    @AppStorage(FloatingQuotaStyle.storageKey) private var panelStyleRaw: String = FloatingQuotaStyle.defaultValue.rawValue
+    @AppStorage(FloatingPanelState.edgeSnapEnabledKey) private var edgeSnapEnabled = false
     @AppStorage("dimmedOpacity") private var dimmedOpacity: Double = 0.35
     @AppStorage("dimDelaySeconds") private var dimDelaySeconds: Double = 5
+
+    private var panelStyle: FloatingQuotaStyle {
+        FloatingQuotaStyle(rawValue: panelStyleRaw) ?? .classic
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("悬浮样式")
+                    LazyVGrid(columns: [
+                        GridItem(.flexible(), spacing: 12),
+                        GridItem(.flexible(), spacing: 12)
+                    ], spacing: 12) {
+                        ForEach(FloatingQuotaStyle.allCases) { style in
+                            FloatingStyleCard(
+                                style: style,
+                                selected: style == panelStyle,
+                                onSelect: { panelStyleRaw = style.rawValue }
+                            )
+                        }
+                    }
+                    Text("默认还是现在这个样式，旧版本用户不需要改设置也能保持原样。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("贴到屏幕边缘时自动收成窄条", isOn: $edgeSnapEnabled)
+                    Text("默认关闭。打开后，拖到屏幕四边附近会自动吸附成横条或竖条，鼠标移上去再恢复原来的浮窗。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+
                 LabeledSliderRow(
                     title: "空闲时的透明度",
                     value: $dimmedOpacity,
@@ -80,6 +112,49 @@ private struct AppearanceTab: View {
             }
             .padding(20)
         }
+    }
+}
+
+private struct FloatingStyleCard: View {
+    let style: FloatingQuotaStyle
+    let selected: Bool
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Image(systemName: style.symbol)
+                        .font(.system(size: 14, weight: .semibold))
+                        .frame(width: 20)
+                    Text(style.title)
+                        .font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                    if selected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(Color.accentColor)
+                    }
+                }
+
+                Text(style.summary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(2)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(selected ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(selected ? Color.accentColor.opacity(0.8) : Color.primary.opacity(0.08),
+                            lineWidth: selected ? 1.5 : 1)
+            )
+        }
+        .buttonStyle(.plain)
     }
 }
 

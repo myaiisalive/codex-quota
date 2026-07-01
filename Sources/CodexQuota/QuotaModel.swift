@@ -24,6 +24,21 @@ struct RateWindow: Codable, Equatable {
     }
 
     var resetDate: Date { Date(timeIntervalSince1970: resetsAt) }
+
+    func resetIfExpired(referenceDate: Date = Date()) -> RateWindow {
+        let interval = TimeInterval(windowMinutes * 60)
+        guard interval > 0, referenceDate >= resetDate else { return self }
+
+        let elapsed = referenceDate.timeIntervalSince(resetDate)
+        let stepCount = Int(elapsed / interval) + 1
+        let nextResetAt = resetDate.addingTimeInterval(interval * Double(stepCount)).timeIntervalSince1970
+
+        return RateWindow(
+            usedPercent: 0,
+            windowMinutes: windowMinutes,
+            resetsAt: nextResetAt
+        )
+    }
 }
 
 struct RateLimits: Codable, Equatable {
@@ -67,7 +82,28 @@ struct RateLimits: Codable, Equatable {
     static let maxDisplayPriority = 90
 }
 
-struct QuotaSnapshot: Equatable {
+struct QuotaSnapshot: Codable, Equatable {
     let limits: RateLimits
     let capturedAt: Date
+
+    var hasRemainingQuota: Bool {
+        [limits.primary, limits.secondary].contains {
+            guard let window = $0 else { return false }
+            return window.remainingPercent > 0.000_001
+        }
+    }
+
+    func resetExpiredWindows(referenceDate: Date = Date()) -> QuotaSnapshot {
+        QuotaSnapshot(
+            limits: RateLimits(
+                limitId: limits.limitId,
+                limitName: limits.limitName,
+                individualLimit: limits.individualLimit,
+                primary: limits.primary?.resetIfExpired(referenceDate: referenceDate),
+                secondary: limits.secondary?.resetIfExpired(referenceDate: referenceDate),
+                planType: limits.planType
+            ),
+            capturedAt: capturedAt
+        )
+    }
 }

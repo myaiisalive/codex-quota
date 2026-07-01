@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct SettingsView: View {
+    @ObservedObject var store: QuotaStore
     @ObservedObject var updateManager: UpdateManager
 
     enum Tab: String, CaseIterable, Identifiable {
@@ -42,10 +43,10 @@ struct SettingsView: View {
 
             Group {
                 switch tab {
-                case .appearance: AppearanceTab()
+                case .appearance: AppearanceTab(store: store)
                 case .menuBar:    MenuBarTab()
                 case .refresh:    RefreshTab()
-                case .about:      AboutTab(updateManager: updateManager)
+                case .about:      AboutTab(store: store, updateManager: updateManager)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -57,8 +58,10 @@ struct SettingsView: View {
 // MARK: - 外观
 
 private struct AppearanceTab: View {
+    @ObservedObject var store: QuotaStore
     @AppStorage(FloatingQuotaStyle.storageKey) private var panelStyleRaw: String = FloatingQuotaStyle.defaultValue.rawValue
     @AppStorage(FloatingPanelState.edgeSnapEnabledKey) private var edgeSnapEnabled = false
+    @AppStorage(UsageSourceDisplaySettings.showInactiveSourcesKey) private var showInactiveSources = false
     @AppStorage("dimmedOpacity") private var dimmedOpacity: Double = 0.35
     @AppStorage("dimDelaySeconds") private var dimDelaySeconds: Double = 5
 
@@ -95,6 +98,15 @@ private struct AppearanceTab: View {
                         .foregroundStyle(.tertiary)
                 }
 
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("显示其他未启用的账号和 API", isOn: $showInactiveSources)
+                    Text("打开后，浮窗里会把以前用过但当前没有启用的账号和 API 也一起列出来；关闭后只显示当前启用的那一条。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+
+                SourceOrderSection(store: store)
+
                 LabeledSliderRow(
                     title: "空闲时的透明度",
                     value: $dimmedOpacity,
@@ -114,6 +126,160 @@ private struct AppearanceTab: View {
             }
             .padding(20)
         }
+    }
+}
+
+private struct SourceOrderSection: View {
+    @ObservedObject var store: QuotaStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("账号和 API 排序")
+                Spacer()
+                if store.sourceSortMode == .custom {
+                    Button("恢复默认顺序") {
+                        store.resetSourceOrder()
+                    }
+                    .buttonStyle(.link)
+                } else {
+                    Text("当前使用默认顺序")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            Text("当前启用的这一条会固定显示在最上面。默认顺序是：官方有额度、API 有余额、官方已用完、API 余额为 0。")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+
+            if let current = store.currentSourceEntry {
+                SourceOrderPinnedRow(entry: current)
+            }
+
+            let entries = store.sortableSourceEntries
+            if entries.isEmpty {
+                Text("暂时没有其他可调整顺序的账号或 API。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                        SourceOrderRow(
+                            entry: entry,
+                            canMoveUp: index > 0,
+                            canMoveDown: index < entries.count - 1,
+                            onMoveUp: { store.moveSource(entry.id, direction: -1) },
+                            onMoveDown: { store.moveSource(entry.id, direction: 1) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct SourceOrderPinnedRow: View {
+    let entry: UsageSourceEntry
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: entry.kind.symbolName)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 16)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(entry.title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Label("启用中", systemImage: "checkmark.circle.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
+                Text("这条固定显示在最上面")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.accentColor.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.accentColor.opacity(0.20), lineWidth: 1)
+        )
+    }
+}
+
+private struct SourceOrderRow: View {
+    let entry: UsageSourceEntry
+    let canMoveUp: Bool
+    let canMoveDown: Bool
+    let onMoveUp: () -> Void
+    let onMoveDown: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: entry.kind.symbolName)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.title)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(summaryText)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer(minLength: 8)
+
+            HStack(spacing: 4) {
+                Button(action: onMoveUp) {
+                    Image(systemName: "arrow.up")
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.bordered)
+                .disabled(!canMoveUp)
+
+                Button(action: onMoveDown) {
+                    Image(systemName: "arrow.down")
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.bordered)
+                .disabled(!canMoveDown)
+            }
+            .controlSize(.small)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.primary.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private var summaryText: String {
+        let bucket = entry.sortBucket()
+        if let subtitle = entry.subtitle, !subtitle.isEmpty {
+            return "\(subtitle) · \(bucket.title)"
+        }
+        return bucket.title
     }
 }
 
@@ -320,6 +486,7 @@ private struct RefreshTab: View {
 // MARK: - 关于
 
 private struct AboutTab: View {
+    @ObservedObject var store: QuotaStore
     @ObservedObject var updateManager: UpdateManager
 
     var body: some View {
@@ -336,6 +503,17 @@ private struct AboutTab: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
+
+            VStack(spacing: 4) {
+                Text("当前账号")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                Text(store.accountProfile?.displayText ?? "还没有识别到")
+                    .font(.system(size: 12, weight: .medium))
+                    .multilineTextAlignment(.center)
+                    .textSelection(.enabled)
+            }
+            .padding(.top, 2)
 
             updateSection
 

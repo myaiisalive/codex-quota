@@ -3,6 +3,7 @@ import SQLite3
 
 /// 从 CC Switch 的 sqlite 数据库中按域名找匹配的 provider 配置
 struct CCSwitchProvider: Equatable {
+    let rowID: Int64
     let name: String
     let usageScriptCode: String     // 整段 JS：({ request: ..., extractor: ... })
     let apiKey: String?
@@ -13,6 +14,56 @@ struct CCSwitchProvider: Equatable {
     let isCurrent: Bool
 
     static func find(for codex: CodexConfig) -> CCSwitchProvider? {
+        bestMatch(from: loadAllProviders(), codex: codex)
+    }
+
+    static func find(locator: ThirdPartySourceLocator) -> CCSwitchProvider? {
+        if let rowID = locator.providerRowID,
+           let provider = loadProvider(rowID: rowID),
+           locator.matches(provider) {
+            return provider
+        }
+
+        return loadAllProviders().first(where: { locator.matches($0) })
+    }
+
+    private static func loadAllProviders() -> [CCSwitchProvider] {
+        let dbPath = NSString(string: "~/.cc-switch/cc-switch.db").expandingTildeInPath
+        guard FileManager.default.fileExists(atPath: dbPath) else { return [] }
+
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else { return [] }
+        defer { sqlite3_close(db) }
+
+        var stmt: OpaquePointer?
+        // ORDER BY rowid DESC → 分数相同的时候，继续沿用“最近添加优先”
+        let sql = """
+        SELECT rowid, name, is_current, meta
+        FROM providers
+        WHERE meta LIKE '%usage_script%'
+        ORDER BY rowid DESC
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+
+        var candidates: [CCSwitchProvider] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let rowID = sqlite3_column_int64(stmt, 0)
+            guard let nameC = sqlite3_column_text(stmt, 1),
+                  let metaC = sqlite3_column_text(stmt, 3) else { continue }
+            let isCurrent = sqlite3_column_int(stmt, 2) != 0
+            let candidate = parse(
+                rowID: rowID,
+                name: String(cString: nameC),
+                isCurrent: isCurrent,
+                metaJson: String(cString: metaC)
+            )
+            if let candidate { candidates.append(candidate) }
+        }
+        return candidates
+    }
+
+    private static func loadProvider(rowID: Int64) -> CCSwitchProvider? {
         let dbPath = NSString(string: "~/.cc-switch/cc-switch.db").expandingTildeInPath
         guard FileManager.default.fileExists(atPath: dbPath) else { return nil }
 
@@ -21,29 +72,28 @@ struct CCSwitchProvider: Equatable {
         defer { sqlite3_close(db) }
 
         var stmt: OpaquePointer?
-        // ORDER BY rowid DESC → 分数相同的时候，继续沿用“最近添加优先”
         let sql = """
-        SELECT name, is_current, meta
+        SELECT rowid, name, is_current, meta
         FROM providers
-        WHERE meta LIKE '%usage_script%'
-        ORDER BY rowid DESC
+        WHERE rowid = ? AND meta LIKE '%usage_script%'
+        LIMIT 1
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
         defer { sqlite3_finalize(stmt) }
 
-        var candidates: [CCSwitchProvider] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            guard let nameC = sqlite3_column_text(stmt, 0),
-                  let metaC = sqlite3_column_text(stmt, 2) else { continue }
-            let isCurrent = sqlite3_column_int(stmt, 1) != 0
-            let candidate = parse(
-                name: String(cString: nameC),
-                isCurrent: isCurrent,
-                metaJson: String(cString: metaC)
-            )
-            if let candidate { candidates.append(candidate) }
+        sqlite3_bind_int64(stmt, 1, rowID)
+        guard sqlite3_step(stmt) == SQLITE_ROW,
+              let nameC = sqlite3_column_text(stmt, 1),
+              let metaC = sqlite3_column_text(stmt, 3) else {
+            return nil
         }
-        return bestMatch(from: candidates, codex: codex)
+
+        return parse(
+            rowID: sqlite3_column_int64(stmt, 0),
+            name: String(cString: nameC),
+            isCurrent: sqlite3_column_int(stmt, 2) != 0,
+            metaJson: String(cString: metaC)
+        )
     }
 
     private static func bestMatch(from candidates: [CCSwitchProvider], codex: CodexConfig) -> CCSwitchProvider? {
@@ -100,7 +150,7 @@ struct CCSwitchProvider: Equatable {
         return normalized
     }
 
-    private static func parse(name: String, isCurrent: Bool, metaJson: String) -> CCSwitchProvider? {
+    private static func parse(rowID: Int64, name: String, isCurrent: Bool, metaJson: String) -> CCSwitchProvider? {
         guard let data = metaJson.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let us = root["usage_script"] as? [String: Any],
@@ -110,6 +160,7 @@ struct CCSwitchProvider: Equatable {
         else { return nil }
 
         return CCSwitchProvider(
+            rowID: rowID,
             name: name,
             usageScriptCode: code,
             apiKey: us["apiKey"] as? String,

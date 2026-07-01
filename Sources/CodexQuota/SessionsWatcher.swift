@@ -1,15 +1,17 @@
 import Foundation
 import CoreServices
 
-/// 监听 ~/.codex/sessions 下的目录变化，触发回调
+/// 监听指定路径变化，触发回调
 final class SessionsWatcher {
     private var stream: FSEventStreamRef?
     private let path: String
+    private let debounceSeconds: Double
     private let onChange: () -> Void
     private var debounceWork: DispatchWorkItem?
 
-    init(path: String, onChange: @escaping () -> Void) {
+    init(path: String, debounceSeconds: Double = 3.0, onChange: @escaping () -> Void) {
         self.path = path
+        self.debounceSeconds = debounceSeconds
         self.onChange = onChange
     }
 
@@ -41,13 +43,12 @@ final class SessionsWatcher {
         self.stream = stream
     }
 
-    // codex 写新 session 时先写 session_start（100%），再写实际消耗
-    // 等 3 秒让 codex 完成写入，避免读到中间状态
+    // session 文件需要更长时间落盘；auth.json 这种小文件可以传更短延迟。
     private func scheduleReload() {
         debounceWork?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.onChange() }
         debounceWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + debounceSeconds, execute: work)
     }
 
     func stop() {

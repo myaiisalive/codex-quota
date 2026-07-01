@@ -686,7 +686,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let host = NSHostingController(rootView: SettingsView(updateManager: updateManager))
+        let host = NSHostingController(rootView: SettingsView(store: store, updateManager: updateManager))
         let w = NSWindow(contentViewController: host)
         w.title = "偏好设置"
         w.styleMask = [.titled, .closable]

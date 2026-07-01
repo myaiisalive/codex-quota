@@ -5,7 +5,7 @@ import JavaScriptCore
 /// 流程：模板替换 → JS eval 拿 request 配置 → URLSession 发请求 → JS eval extractor(response)
 enum UsageScriptRunner {
 
-    struct Balance: Equatable {
+    struct Balance: Codable, Equatable {
         var providerName: String
         var remaining: Double?
         var used: Double?

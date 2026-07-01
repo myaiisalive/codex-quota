@@ -1,15 +1,21 @@
 import SwiftUI
 
+private let sourceHistoryCoordinateSpace = "sourceHistorySection"
+
 struct QuotaView: View {
     @ObservedObject var store: QuotaStore
     @ObservedObject var panelState: FloatingPanelState
     @AppStorage("collapsed") private var collapsed = false
     @AppStorage(FloatingQuotaStyle.storageKey) private var styleRaw: String = FloatingQuotaStyle.defaultValue.rawValue
+    @AppStorage(UsageSourceDisplaySettings.showInactiveSourcesKey) private var showInactiveSources = false
     @AppStorage("dimmedOpacity") private var dimmedOpacity: Double = 0.35
     @AppStorage("dimDelaySeconds") private var dimDelaySeconds: Double = 5
     @State private var hovering = false
     @State private var dimmed = false
     @State private var dimTask: DispatchWorkItem?
+    @State private var historyNow = Date()
+    @State private var draggedSourceID: String?
+    @State private var sourceRowFrames: [String: CGRect] = [:]
     var onSizeChange: ((CGSize) -> Void)? = nil
     var onHide: (() -> Void)? = nil
     var onMinimize: (() -> Void)? = nil
@@ -50,6 +56,9 @@ struct QuotaView: View {
         .onAppear {
             scheduleDim()
             pushAlpha()
+        }
+        .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { now in
+            historyNow = now
         }
     }
 
@@ -173,6 +182,9 @@ struct QuotaView: View {
 
     private var horizontalEdgeBar: some View {
         HStack(spacing: 7) {
+            if let current = store.currentSourceEntry {
+                edgeBarActiveSourceChip(current)
+            }
             if store.thirdPartyApiOnly {
                 edgeBarApiHorizontal
             } else {
@@ -195,6 +207,9 @@ struct QuotaView: View {
 
     private var verticalEdgeBar: some View {
         VStack(spacing: 6) {
+            if let current = store.currentSourceEntry {
+                edgeBarActiveSourceVertical(current)
+            }
             if store.thirdPartyApiOnly {
                 edgeBarApiVertical
             } else {
@@ -277,6 +292,8 @@ struct QuotaView: View {
                 refreshButton()
                 collapseButton()
             }
+
+            sourceHistorySection
 
             if let snap = store.snapshot {
                 if !store.thirdPartyApiOnly {
@@ -682,48 +699,54 @@ struct QuotaView: View {
     }
 
     private var orbitExpandedBody: some View {
-        orbitShell(diameter: 96, tintOpacity: 0.05) {
-            Group {
-                if store.thirdPartyApiOnly, let bal = store.apiBalance {
-                    VStack(spacing: 4) {
-                        Text(balanceBadgeText(bal))
-                            .font(.system(size: 18, weight: .bold).monospacedDigit())
-                            .foregroundStyle(balanceColor(bal.remaining ?? 0, total: bal.total))
-                        Text(bal.providerName)
-                            .font(.system(size: 8, weight: .medium))
-                            .lineLimit(1)
-                        if let used = bal.used {
-                            Text("已用 \(formatMoney(used))")
-                                .font(.system(size: 8).monospacedDigit())
-                                .foregroundStyle(.secondary)
+        VStack(spacing: 8) {
+            orbitShell(diameter: 96, tintOpacity: 0.05) {
+                Group {
+                    if store.thirdPartyApiOnly, let bal = store.apiBalance {
+                        VStack(spacing: 4) {
+                            Text(balanceBadgeText(bal))
+                                .font(.system(size: 18, weight: .bold).monospacedDigit())
+                                .foregroundStyle(balanceColor(bal.remaining ?? 0, total: bal.total))
+                            Text(bal.providerName)
+                                .font(.system(size: 8, weight: .medium))
+                                .lineLimit(1)
+                            if let used = bal.used {
+                                Text("已用 \(formatMoney(used))")
+                                    .font(.system(size: 8).monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
                         }
+                    } else if let window = headlineWindow {
+                        VStack(spacing: 3) {
+                            CircleGauge(window: window)
+                            if let extra = secondaryHeadlineWindow {
+                                Text("\(extra.windowLabel) 剩 \(Int(extra.remainingPercent.rounded()))%")
+                                    .font(.system(size: 7.5, weight: .medium).monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            if let snap = store.snapshot {
+                                Text("更新于 \(timeAgo(snap.capturedAt))")
+                                    .font(.system(size: 7.5))
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    } else if let err = store.lastError {
+                        Text(err)
+                            .font(.system(size: 8.5))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .frame(width: 76)
+                    } else {
+                        ProgressView().controlSize(.small)
                     }
-                } else if let window = headlineWindow {
-                    VStack(spacing: 3) {
-                        CircleGauge(window: window)
-                        if let extra = secondaryHeadlineWindow {
-                            Text("\(extra.windowLabel) 剩 \(Int(extra.remainingPercent.rounded()))%")
-                                .font(.system(size: 7.5, weight: .medium).monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        }
-                        if let snap = store.snapshot {
-                            Text("更新于 \(timeAgo(snap.capturedAt))")
-                                .font(.system(size: 7.5))
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                } else if let err = store.lastError {
-                    Text(err)
-                        .font(.system(size: 8.5))
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .frame(width: 76)
-                } else {
-                    ProgressView().controlSize(.small)
                 }
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if !visibleSourceEntries.isEmpty {
+                sourceHistorySection
+                    .frame(width: 196, alignment: .leading)
+            }
         }
     }
 
@@ -854,6 +877,8 @@ struct QuotaView: View {
                 collapseButton()
             }
 
+            sourceHistorySection
+
             if store.thirdPartyApiOnly, let bal = store.apiBalance {
                 ApiBalanceRow(balance: bal)
             } else if !snapshotWindows.isEmpty {
@@ -883,6 +908,271 @@ struct QuotaView: View {
         .frame(width: 248, alignment: .leading)
     }
 
+    @ViewBuilder
+    private var sourceHistorySection: some View {
+        let entries = visibleSourceEntries
+        if !entries.isEmpty {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(alignment: .center) {
+                    Text("账号和 API")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                    Toggle("显示其他", isOn: $showInactiveSources)
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .font(.system(size: 10))
+                    if store.sourceSortMode == .custom {
+                        restoreSourceOrderButton()
+                    }
+                }
+
+                ForEach(entries) { entry in
+                    sourceEntryRow(
+                        entry,
+                        isCurrent: entry.id == store.currentSourceID,
+                        canDrag: canDragSourceEntry(entry)
+                    )
+                }
+            }
+            .coordinateSpace(name: sourceHistoryCoordinateSpace)
+            .onPreferenceChange(SourceEntryFramePreferenceKey.self) { value in
+                sourceRowFrames = value
+            }
+        }
+    }
+
+    private var visibleSourceEntries: [UsageSourceEntry] {
+        guard let current = store.currentSourceEntry else {
+            return showInactiveSources ? store.orderedSourceEntries : Array(store.orderedSourceEntries.prefix(1))
+        }
+        return [current] + (showInactiveSources ? store.inactiveSourceEntries : [])
+    }
+
+    private func canDragSourceEntry(_ entry: UsageSourceEntry) -> Bool {
+        guard showInactiveSources, visibleSourceEntries.count > 1 else { return false }
+        if let currentSourceID = store.currentSourceID {
+            return entry.id != currentSourceID
+        }
+        return true
+    }
+
+    private func sourceEntryRow(_ entry: UsageSourceEntry, isCurrent: Bool, canDrag: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: entry.kind.symbolName)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(isCurrent ? Color.accentColor : .secondary)
+                Text(entry.title)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if isCurrent {
+                    Label("启用中", systemImage: "checkmark.circle.fill")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .labelStyle(.titleAndIcon)
+                }
+                Spacer(minLength: 6)
+                if canDrag {
+                    dragHandle(for: entry)
+                }
+                if let summary = sourceSummaryText(entry, isCurrent: isCurrent) {
+                    Text(summary)
+                        .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(sourceSummaryColor(entry, isCurrent: isCurrent))
+                        .lineLimit(1)
+                }
+            }
+
+            HStack(spacing: 4) {
+                if let subtitle = entry.subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text("·")
+                }
+                Text(isCurrent ? "当前启用" : "上次更新 \(timeAgo(entry.lastSeenAt))")
+            }
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(isCurrent ? Color.accentColor.opacity(0.10) : Color.primary.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(isCurrent ? Color.accentColor.opacity(0.28) : Color.primary.opacity(0.06), lineWidth: 1)
+        )
+        .background(
+            GeometryReader { geo in
+                Color.clear
+                    .preference(
+                        key: SourceEntryFramePreferenceKey.self,
+                        value: [entry.id: geo.frame(in: .named(sourceHistoryCoordinateSpace))]
+                    )
+            }
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .opacity(draggedSourceID == entry.id ? 0.72 : 1)
+    }
+
+    private func dragHandle(for entry: UsageSourceEntry) -> some View {
+        Image(systemName: "line.3.horizontal")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.tertiary)
+            .frame(width: 22, height: 22)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.primary.opacity(0.05))
+            )
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .named(sourceHistoryCoordinateSpace))
+                    .onChanged { value in
+                        draggedSourceID = entry.id
+                        updateDraggedSource(entry.id, locationY: value.location.y)
+                    }
+                    .onEnded { _ in
+                        draggedSourceID = nil
+                    }
+            )
+    }
+
+    private func restoreSourceOrderButton(size: CGFloat = 18, iconSize: CGFloat = 10) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                store.resetSourceOrder()
+            }
+        } label: {
+            Image(systemName: "arrow.uturn.backward.circle")
+                .font(.system(size: iconSize, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: size, height: size)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("恢复默认排序")
+    }
+
+    private func updateDraggedSource(_ draggedID: String, locationY: CGFloat) {
+        let targets = visibleSourceEntries.filter { $0.id != draggedID }
+        let targetFrames = targets.compactMap { entry -> (UsageSourceEntry, CGRect)? in
+            guard let frame = sourceRowFrames[entry.id] else { return nil }
+            return (entry, frame)
+        }.sorted(by: { $0.1.midY < $1.1.midY })
+        guard !targetFrames.isEmpty else {
+            return
+        }
+
+        let target: (UsageSourceEntry, CGRect)
+        if let containedTarget = targetFrames.first(where: { locationY >= $0.1.minY && locationY <= $0.1.maxY }) {
+            target = containedTarget
+        } else if let firstTarget = targetFrames.first, locationY < firstTarget.1.minY {
+            target = firstTarget
+        } else if let lastTarget = targetFrames.last, locationY > lastTarget.1.maxY {
+            target = lastTarget
+        } else {
+            return
+        }
+
+        let placeAfter: Bool
+        if let currentSourceID = store.currentSourceID,
+           target.0.id == currentSourceID {
+            placeAfter = true
+        } else {
+            placeAfter = locationY > target.1.midY
+        }
+
+        withAnimation(.easeInOut(duration: 0.12)) {
+            store.reorderSource(draggedID, targetID: target.0.id, placeAfter: placeAfter)
+        }
+    }
+
+    private func edgeBarActiveSourceChip(_ entry: UsageSourceEntry) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 8, weight: .bold))
+            Text(entry.compactLabel)
+                .font(.system(size: 9, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .foregroundStyle(Color.accentColor)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(
+            Capsule()
+                .fill(Color.accentColor.opacity(0.12))
+        )
+    }
+
+    private func edgeBarActiveSourceVertical(_ entry: UsageSourceEntry) -> some View {
+        VStack(spacing: 2) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(Color.accentColor)
+            Text(shortSourceLabel(entry))
+                .font(.system(size: 6.5, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+        }
+    }
+
+    private func shortSourceLabel(_ entry: UsageSourceEntry) -> String {
+        let base = entry.compactLabel
+        if let atIndex = base.firstIndex(of: "@"), atIndex > base.startIndex {
+            return String(base[..<atIndex].prefix(4))
+        }
+        return String(base.prefix(4))
+    }
+
+    private func sourceSummaryText(_ entry: UsageSourceEntry, isCurrent: Bool) -> String? {
+        switch entry.kind {
+        case .officialAccount:
+            guard let snapshot = historySnapshot(for: entry, isCurrent: isCurrent) else { return nil }
+            let ws = windows(snapshot)
+            guard !ws.isEmpty else { return nil }
+            return ws.prefix(2).map { "\($0.windowLabel) \(Int($0.remainingPercent.rounded()))%" }.joined(separator: " · ")
+        case .thirdPartyAPI:
+            guard let balance = entry.balance else { return nil }
+            if let remaining = balance.remaining {
+                let unit = balance.unit.map { " \($0)" } ?? ""
+                return "剩 \(compactBalanceText(remaining))\(unit)"
+            }
+            if let used = balance.used {
+                let unit = balance.unit.map { " \($0)" } ?? ""
+                return "已用 \(compactBalanceText(used))\(unit)"
+            }
+            return nil
+        }
+    }
+
+    private func sourceSummaryColor(_ entry: UsageSourceEntry, isCurrent: Bool) -> Color {
+        switch entry.kind {
+        case .officialAccount:
+            if let window = historySnapshot(for: entry, isCurrent: isCurrent).flatMap({ windows($0).first }) {
+                return rowColor(window)
+            }
+        case .thirdPartyAPI:
+            if let balance = entry.balance,
+               let remaining = balance.remaining {
+                return balanceColor(remaining, total: balance.total)
+            }
+        }
+        return .secondary
+    }
+
+    private func historySnapshot(for entry: UsageSourceEntry, isCurrent: Bool) -> QuotaSnapshot? {
+        guard let snapshot = entry.snapshot else { return nil }
+        guard entry.kind == .officialAccount, !isCurrent else { return snapshot }
+        return snapshot.resetExpiredWindows(referenceDate: historyNow)
+    }
+
     private func cardTag(window: RateWindow) -> some View {
         HStack(spacing: 4) {
             Text(window.windowLabel)
@@ -898,6 +1188,14 @@ struct QuotaView: View {
             Capsule()
                 .fill(rowColor(window).opacity(0.10))
         )
+    }
+}
+
+private struct SourceEntryFramePreferenceKey: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
     }
 }
 

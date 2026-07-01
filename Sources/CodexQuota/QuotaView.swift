@@ -982,6 +982,8 @@ struct QuotaView: View {
                         .font(.system(size: 10, weight: .semibold).monospacedDigit())
                         .foregroundStyle(sourceSummaryColor(entry, isCurrent: isCurrent))
                         .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .layoutPriority(1)
                 }
             }
 

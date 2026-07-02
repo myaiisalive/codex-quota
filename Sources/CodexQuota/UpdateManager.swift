@@ -69,6 +69,7 @@ final class UpdateManager: ObservableObject {
     @Published private(set) var lastCheckedAt: Date?
 
     private static let lastCheckedAtKey = "UpdateManager.lastCheckedAt"
+    private static let ignoredVersionKey = "UpdateManager.ignoredVersion"
     private static let checkInterval: TimeInterval = 12 * 60 * 60
     private static let releaseURL = URL(string: "https://api.github.com/repos/myaiisalive/codex-quota/releases/latest")!
     private static let bundleID = "com.local.codexquota"
@@ -96,6 +97,12 @@ final class UpdateManager: ObservableObject {
 
     var currentVersionText: String {
         BundleVersion.current.displayString
+    }
+
+    var ignoredVersionText: String? {
+        guard let value = UserDefaults.standard.string(forKey: Self.ignoredVersionKey),
+              !value.isEmpty else { return nil }
+        return value
     }
 
     var availableRelease: (release: ReleaseInfo, method: InstallMethod)? {
@@ -158,6 +165,14 @@ final class UpdateManager: ObservableObject {
             url = URL(string: "https://github.com/myaiisalive/codex-quota/releases")!
         }
         NSWorkspace.shared.open(url)
+    }
+
+    func shouldAutoPresent(_ release: ReleaseInfo) -> Bool {
+        UserDefaults.standard.string(forKey: Self.ignoredVersionKey) != release.tagName
+    }
+
+    func ignore(_ release: ReleaseInfo) {
+        UserDefaults.standard.set(release.tagName, forKey: Self.ignoredVersionKey)
     }
 
     func performAvailableUpdate() async throws {

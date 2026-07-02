@@ -54,7 +54,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         updateStatusTitle()
         syncEdgeSnapPreference()
         Task { @MainActor in
-            _ = await updateManager.checkForUpdates(force: false)
+            let hasUpdate = await updateManager.checkForUpdates(force: false)
+            if hasUpdate,
+               let available = updateManager.availableRelease,
+               updateManager.shouldAutoPresent(available.release) {
+                showUpdateAlert(
+                    release: available.release,
+                    method: available.method,
+                    allowsIgnoreVersion: true
+                )
+            }
         }
     }
 
@@ -715,13 +724,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func checkForUpdatesNow() {
         Task { @MainActor in
             if let available = updateManager.availableRelease {
-                showUpdateAlert(release: available.release, method: available.method)
+                showUpdateAlert(
+                    release: available.release,
+                    method: available.method,
+                    allowsIgnoreVersion: true
+                )
                 return
             }
 
             let hasUpdate = await updateManager.checkForUpdates(force: true)
             if hasUpdate, let available = updateManager.availableRelease {
-                showUpdateAlert(release: available.release, method: available.method)
+                showUpdateAlert(
+                    release: available.release,
+                    method: available.method,
+                    allowsIgnoreVersion: true
+                )
                 return
             }
 
@@ -736,13 +753,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func showUpdateAlert(release: UpdateManager.ReleaseInfo, method: UpdateManager.InstallMethod) {
+    private func showUpdateAlert(
+        release: UpdateManager.ReleaseInfo,
+        method: UpdateManager.InstallMethod,
+        allowsIgnoreVersion: Bool
+    ) {
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.messageText = "发现新版本 \(release.version.shortVersion)"
         alert.informativeText = method.summaryText
         alert.addButton(withTitle: method.primaryActionTitle)
-        alert.addButton(withTitle: "查看发布说明")
+        if allowsIgnoreVersion {
+            alert.addButton(withTitle: "忽略这个版本")
+        }
         alert.addButton(withTitle: "以后再说")
         NSApp.activate(ignoringOtherApps: true)
         let response = alert.runModal()
@@ -759,7 +782,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
             }
         case .alertSecondButtonReturn:
-            updateManager.openReleasePage()
+            if allowsIgnoreVersion {
+                updateManager.ignore(release)
+            } else {
+                break
+            }
         default:
             break
         }

@@ -16,6 +16,7 @@ struct QuotaView: View {
     @State private var historyNow = Date()
     @State private var draggedSourceID: String?
     @State private var sourceRowFrames: [String: CGRect] = [:]
+    @State private var pendingDeletionEntry: UsageSourceEntry?
     var onSizeChange: ((CGSize) -> Void)? = nil
     var onHide: (() -> Void)? = nil
     var onMinimize: (() -> Void)? = nil
@@ -59,6 +60,16 @@ struct QuotaView: View {
         }
         .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { now in
             historyNow = now
+        }
+        .alert(item: $pendingDeletionEntry) { entry in
+            Alert(
+                title: Text("删除这条记录？"),
+                message: Text("删掉后，这条记录会从列表里移除。以后再次用到这个账号或 API，它会自动重新出现。"),
+                primaryButton: .destructive(Text("删除")) {
+                    store.deleteSource(entry.id)
+                },
+                secondaryButton: .cancel(Text("取消"))
+            )
         }
     }
 
@@ -931,7 +942,8 @@ struct QuotaView: View {
                     sourceEntryRow(
                         entry,
                         isCurrent: entry.id == store.currentSourceID,
-                        canDrag: canDragSourceEntry(entry)
+                        canDrag: canDragSourceEntry(entry),
+                        canDelete: entry.id != store.currentSourceID
                     )
                 }
             }
@@ -957,7 +969,7 @@ struct QuotaView: View {
         return true
     }
 
-    private func sourceEntryRow(_ entry: UsageSourceEntry, isCurrent: Bool, canDrag: Bool) -> some View {
+    private func sourceEntryRow(_ entry: UsageSourceEntry, isCurrent: Bool, canDrag: Bool, canDelete: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Image(systemName: entry.kind.symbolName)
@@ -977,6 +989,7 @@ struct QuotaView: View {
                 if canDrag {
                     dragHandle(for: entry)
                 }
+                sourceDeleteButton(entry: entry, isEnabled: canDelete)
                 if let summary = sourceSummaryText(entry, isCurrent: isCurrent) {
                     Text(summary)
                         .font(.system(size: 10, weight: .semibold).monospacedDigit())
@@ -1020,6 +1033,25 @@ struct QuotaView: View {
         )
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .opacity(draggedSourceID == entry.id ? 0.72 : 1)
+    }
+
+    private func sourceDeleteButton(entry: UsageSourceEntry, isEnabled: Bool) -> some View {
+        Button {
+            pendingDeletionEntry = entry
+        } label: {
+            Image(systemName: "trash")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(isEnabled ? Color.red.opacity(0.82) : Color.secondary.opacity(0.7))
+                .frame(width: 22, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.primary.opacity(0.05))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .help(isEnabled ? "删除这条记录" : "当前启用中的不能删除")
     }
 
     private func dragHandle(for entry: UsageSourceEntry) -> some View {

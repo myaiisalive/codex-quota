@@ -358,6 +358,25 @@ final class QuotaStore: ObservableObject {
         UsageSourceOrderStore.saveCustomOrderIDs([])
     }
 
+    func deleteSource(_ id: String) {
+        guard id != currentSourceID else { return }
+        guard sourceHistory.contains(where: { $0.id == id }) else { return }
+
+        inactiveThirdPartyRefreshTask?.cancel()
+
+        sourceHistory.removeAll { $0.id == id }
+        UsageSourceHistoryStore.save(sourceHistory)
+
+        if sourceSortMode == .custom {
+            customSourceOrderIDs.removeAll { $0 == id }
+            if sourceHistory.filter({ $0.id != currentSourceID }).isEmpty {
+                resetSourceOrder()
+            } else {
+                UsageSourceOrderStore.saveCustomOrderIDs(customSourceOrderIDs)
+            }
+        }
+    }
+
     private func merge(existing: UsageSourceEntry, incoming: UsageSourceEntry) -> UsageSourceEntry {
         UsageSourceEntry(
             id: incoming.id,

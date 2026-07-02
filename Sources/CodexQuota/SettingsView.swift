@@ -131,6 +131,7 @@ private struct AppearanceTab: View {
 
 private struct SourceOrderSection: View {
     @ObservedObject var store: QuotaStore
+    @State private var pendingDeletionEntry: UsageSourceEntry?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -170,11 +171,22 @@ private struct SourceOrderSection: View {
                             canMoveUp: index > 0,
                             canMoveDown: index < entries.count - 1,
                             onMoveUp: { store.moveSource(entry.id, direction: -1) },
-                            onMoveDown: { store.moveSource(entry.id, direction: 1) }
+                            onMoveDown: { store.moveSource(entry.id, direction: 1) },
+                            onDelete: { pendingDeletionEntry = entry }
                         )
                     }
                 }
             }
+        }
+        .alert(item: $pendingDeletionEntry) { entry in
+            Alert(
+                title: Text("删除这条记录？"),
+                message: Text("删掉后，这条记录会从列表里移除。以后再次用到这个账号或 API，它会自动重新出现。"),
+                primaryButton: .destructive(Text("删除")) {
+                    store.deleteSource(entry.id)
+                },
+                secondaryButton: .cancel(Text("取消"))
+            )
         }
     }
 }
@@ -205,6 +217,15 @@ private struct SourceOrderPinnedRow: View {
             }
 
             Spacer()
+
+            Button {
+            } label: {
+                Image(systemName: "trash")
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.bordered)
+            .disabled(true)
+            .help("当前启用中的不能删除")
         }
         .padding(10)
         .background(
@@ -224,6 +245,7 @@ private struct SourceOrderRow: View {
     let canMoveDown: Bool
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
+    let onDelete: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
@@ -260,6 +282,13 @@ private struct SourceOrderRow: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(!canMoveDown)
+
+                Button(action: onDelete) {
+                    Image(systemName: "trash")
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
             }
             .controlSize(.small)
         }
@@ -526,10 +555,16 @@ private struct AboutTab: View {
                 }
             }
 
-            Text("额度数据仍是本地读取；只有检查新版本时才会联网访问 GitHub。")
+            Text("额度数据仍是本地读取；只有检查新版本时才会联网看看有没有新版本。")
                 .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
                 .padding(.top, 4)
+
+            if let ignoredVersion = updateManager.ignoredVersionText {
+                Text("已忽略版本：\(ignoredVersion)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            }
 
             Spacer()
         }

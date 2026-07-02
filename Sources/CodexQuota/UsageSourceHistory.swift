@@ -240,4 +240,5 @@ enum UsageSourceOrderStore {
 
 enum UsageSourceDisplaySettings {
     static let showInactiveSourcesKey = "showInactiveUsageSources"
+    static let showInactiveOfficialResetTimesKey = "showInactiveOfficialResetTimes"
 }

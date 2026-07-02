@@ -62,6 +62,7 @@ private struct AppearanceTab: View {
     @AppStorage(FloatingQuotaStyle.storageKey) private var panelStyleRaw: String = FloatingQuotaStyle.defaultValue.rawValue
     @AppStorage(FloatingPanelState.edgeSnapEnabledKey) private var edgeSnapEnabled = false
     @AppStorage(UsageSourceDisplaySettings.showInactiveSourcesKey) private var showInactiveSources = false
+    @AppStorage(UsageSourceDisplaySettings.showInactiveOfficialResetTimesKey) private var showInactiveOfficialResetTimes = true
     @AppStorage("dimmedOpacity") private var dimmedOpacity: Double = 0.35
     @AppStorage("dimDelaySeconds") private var dimDelaySeconds: Double = 5
 
@@ -101,6 +102,13 @@ private struct AppearanceTab: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Toggle("显示其他未启用的账号和 API", isOn: $showInactiveSources)
                     Text("打开后，浮窗里会把以前用过但当前没有启用的账号和 API 也一起列出来；关闭后只显示当前启用的那一条。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("显示未启用官方账号的刷新时间", isOn: $showInactiveOfficialResetTimes)
+                    Text("默认开启。打开后，其他官方账号会显示 5 小时和 1 周额度下次刷新的时间。")
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                 }

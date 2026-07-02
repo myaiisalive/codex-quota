@@ -8,6 +8,7 @@ struct QuotaView: View {
     @AppStorage("collapsed") private var collapsed = false
     @AppStorage(FloatingQuotaStyle.storageKey) private var styleRaw: String = FloatingQuotaStyle.defaultValue.rawValue
     @AppStorage(UsageSourceDisplaySettings.showInactiveSourcesKey) private var showInactiveSources = false
+    @AppStorage(UsageSourceDisplaySettings.showInactiveOfficialResetTimesKey) private var showInactiveOfficialResetTimes = true
     @AppStorage("dimmedOpacity") private var dimmedOpacity: Double = 0.35
     @AppStorage("dimDelaySeconds") private var dimDelaySeconds: Double = 5
     @State private var hovering = false
@@ -990,27 +991,31 @@ struct QuotaView: View {
                     dragHandle(for: entry)
                 }
                 sourceDeleteButton(entry: entry, isEnabled: canDelete)
-                if let summary = sourceSummaryText(entry, isCurrent: isCurrent) {
-                    Text(summary)
-                        .font(.system(size: 10, weight: .semibold).monospacedDigit())
-                        .foregroundStyle(sourceSummaryColor(entry, isCurrent: isCurrent))
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .layoutPriority(1)
-                }
+                sourceSummaryView(entry, isCurrent: isCurrent)
+                    .layoutPriority(1)
             }
 
-            HStack(spacing: 4) {
-                if let subtitle = entry.subtitle, !subtitle.isEmpty {
-                    Text(subtitle)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Text("·")
-                }
+            Text(sourceSubtitleText(entry))
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            HStack(spacing: 8) {
                 Text(isCurrent ? "当前启用" : "上次更新 \(timeAgo(entry.lastSeenAt))")
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Spacer(minLength: 0)
+
+                if let resetSummary = inactiveOfficialResetSummaryText(entry, isCurrent: isCurrent) {
+                    Text("刷新 \(resetSummary)")
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
             }
-            .font(.system(size: 10))
-            .foregroundStyle(.secondary)
+            .font(.system(size: 9.5).monospacedDigit())
+            .foregroundStyle(.tertiary)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
@@ -1165,46 +1170,90 @@ struct QuotaView: View {
         return String(base.prefix(4))
     }
 
-    private func sourceSummaryText(_ entry: UsageSourceEntry, isCurrent: Bool) -> String? {
+    @ViewBuilder
+    private func sourceSummaryView(_ entry: UsageSourceEntry, isCurrent: Bool) -> some View {
         switch entry.kind {
         case .officialAccount:
-            guard let snapshot = historySnapshot(for: entry, isCurrent: isCurrent) else { return nil }
-            let ws = windows(snapshot)
-            guard !ws.isEmpty else { return nil }
-            return ws.prefix(2).map { "\($0.windowLabel) \(Int($0.remainingPercent.rounded()))%" }.joined(separator: " · ")
+            if let snapshot = historySnapshot(for: entry, isCurrent: isCurrent) {
+                let summaryWindows = Array(windows(snapshot).prefix(2))
+                if !summaryWindows.isEmpty {
+                    HStack(spacing: 4) {
+                        ForEach(Array(summaryWindows.enumerated()), id: \.offset) { index, window in
+                            if index > 0 {
+                                Text("·")
+                                    .foregroundStyle(.tertiary)
+                            }
+                            Text("\(window.windowLabel) \(Int(window.remainingPercent.rounded()))%")
+                                .foregroundStyle(rowColor(window))
+                        }
+                    }
+                    .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                }
+            }
         case .thirdPartyAPI:
-            guard let balance = entry.balance else { return nil }
-            if let remaining = balance.remaining {
-                let unit = balance.unit.map { " \($0)" } ?? ""
-                return "剩 \(compactBalanceText(remaining))\(unit)"
+            if let balance = entry.balance {
+                if let remaining = balance.remaining {
+                    let unit = balance.unit.map { " \($0)" } ?? ""
+                    Text("剩 \(compactBalanceText(remaining))\(unit)")
+                        .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(balanceColor(remaining, total: balance.total))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                } else if let used = balance.used {
+                    let unit = balance.unit.map { " \($0)" } ?? ""
+                    Text("已用 \(compactBalanceText(used))\(unit)")
+                        .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
             }
-            if let used = balance.used {
-                let unit = balance.unit.map { " \($0)" } ?? ""
-                return "已用 \(compactBalanceText(used))\(unit)"
-            }
-            return nil
         }
     }
 
-    private func sourceSummaryColor(_ entry: UsageSourceEntry, isCurrent: Bool) -> Color {
-        switch entry.kind {
-        case .officialAccount:
-            if let window = historySnapshot(for: entry, isCurrent: isCurrent).flatMap({ windows($0).first }) {
-                return rowColor(window)
-            }
-        case .thirdPartyAPI:
-            if let balance = entry.balance,
-               let remaining = balance.remaining {
-                return balanceColor(remaining, total: balance.total)
-            }
+    private func sourceSubtitleText(_ entry: UsageSourceEntry) -> String {
+        guard let subtitle = entry.subtitle, !subtitle.isEmpty else {
+            return " "
         }
-        return .secondary
+        return subtitle
+    }
+
+    private func inactiveOfficialResetSummaryText(_ entry: UsageSourceEntry, isCurrent: Bool) -> String? {
+        guard showInactiveOfficialResetTimes,
+              !isCurrent,
+              entry.kind == .officialAccount,
+              let snapshot = historySnapshot(for: entry, isCurrent: isCurrent) else {
+            return nil
+        }
+
+        let resetParts = windows(snapshot).prefix(2).map { window in
+            "\(window.windowLabel) \(inactiveOfficialResetText(window.resetDate))"
+        }
+        guard !resetParts.isEmpty else { return nil }
+        return resetParts.joined(separator: " · ")
     }
 
     private func historySnapshot(for entry: UsageSourceEntry, isCurrent: Bool) -> QuotaSnapshot? {
         guard let snapshot = entry.snapshot else { return nil }
         guard entry.kind == .officialAccount, !isCurrent else { return snapshot }
         return snapshot.resetExpiredWindows(referenceDate: historyNow)
+    }
+
+    private func inactiveOfficialResetText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) {
+            formatter.dateFormat = "HH:mm"
+            return formatter.string(from: date)
+        }
+        if calendar.isDateInTomorrow(date) {
+            formatter.dateFormat = "明 HH:mm"
+            return formatter.string(from: date)
+        }
+        formatter.dateFormat = "M/d HH:mm"
+        return formatter.string(from: date)
     }
 
     private func cardTag(window: RateWindow) -> some View {

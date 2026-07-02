@@ -6,12 +6,15 @@ import Foundation
 final class UpdateManager: ObservableObject {
     enum InstallMethod {
         case manual
-        case brew
+        case brew(appPath: String)
+        case brewTapLag(availableVersion: String)
 
         var primaryActionTitle: String {
             switch self {
-            case .manual: return "自动更新"
-            case .brew: return "打开终端更新"
+            case .manual, .brewTapLag:
+                return "自动更新"
+            case .brew:
+                return "打开终端更新"
             }
         }
 
@@ -21,6 +24,8 @@ final class UpdateManager: ObservableObject {
                 return "会自动下载安装新版本，替换当前软件，然后重新打开。"
             case .brew:
                 return "会打开终端并自动执行 Homebrew 更新命令，方便直接看到进度和系统提示。"
+            case .brewTapLag(let availableVersion):
+                return "Homebrew 里的版本现在还是 \(availableVersion)，还没同步到这个新版本。会直接下载安装新版本，替换当前软件，然后重新打开。"
             }
         }
     }
@@ -136,7 +141,7 @@ final class UpdateManager: ObservableObject {
         state = .checking
         do {
             let release = try await fetchLatestRelease()
-            let installMethod = try await detectInstallMethod()
+            let installMethod = try await detectInstallMethod(for: release)
             let hasUpdate = release.version.compare(to: .current) == .orderedDescending
             let now = Date()
             lastCheckedAt = now
@@ -164,8 +169,10 @@ final class UpdateManager: ObservableObject {
         switch method {
         case .manual:
             try await installManualUpdate(from: release)
-        case .brew:
-            try await launchBrewUpgradeInTerminal()
+        case .brew(let appPath):
+            try await launchBrewUpgradeInTerminal(appPath: appPath)
+        case .brewTapLag:
+            try await installManualUpdate(from: release)
         }
     }
 
@@ -181,18 +188,72 @@ final class UpdateManager: ObservableObject {
         return try JSONDecoder().decode(ReleaseInfo.self, from: data)
     }
 
-    private func detectInstallMethod() async throws -> InstallMethod {
-        guard let brewPath = Self.knownBrewPaths.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+    private struct BrewCaskInfo {
+        let availableVersion: BundleVersion
+        let installedVersion: BundleVersion?
+        let appPath: String?
+    }
+
+    private func detectInstallMethod(for release: ReleaseInfo) async throws -> InstallMethod {
+        guard let brewInfo = try await loadBrewCaskInfo(),
+              brewInfo.installedVersion != nil else {
             return .manual
         }
+
+        if brewInfo.availableVersion.compare(to: release.version) != .orderedAscending {
+            return .brew(appPath: brewInfo.appPath ?? Bundle.main.bundlePath)
+        }
+        return .brewTapLag(availableVersion: brewInfo.availableVersion.shortVersion)
+    }
+
+    private func loadBrewCaskInfo() async throws -> BrewCaskInfo? {
+        guard let brewPath = Self.knownBrewPaths.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            return nil
+        }
+
         let result = try await Self.runProcess(
             executableURL: URL(fileURLWithPath: brewPath),
-            arguments: ["list", "--cask", "--versions", "codex-quota"]
+            arguments: ["info", "--cask", "--json=v2", "codex-quota"]
         )
-        if result.status == 0, !result.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return .brew
+        guard result.status == 0,
+              let data = result.stdout.data(using: .utf8),
+              let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let casks = root["casks"] as? [[String: Any]],
+              let cask = casks.first,
+              let versionText = cask["version"] as? String,
+              !versionText.isEmpty else {
+            return nil
         }
-        return .manual
+
+        let installedVersion: BundleVersion? = {
+            if let value = cask["installed"] as? String,
+               !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return BundleVersion(shortVersion: value, buildVersion: value)
+            }
+            if let values = cask["installed"] as? [String],
+               let first = values.first,
+               !first.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return BundleVersion(shortVersion: first, buildVersion: first)
+            }
+            return nil
+        }()
+
+        let appPath: String? = {
+            guard let artifacts = cask["artifacts"] as? [[String: Any]] else { return nil }
+            for artifact in artifacts {
+                if let target = artifact["target"] as? String,
+                   target.hasSuffix(".app") {
+                    return target
+                }
+            }
+            return nil
+        }()
+
+        return BrewCaskInfo(
+            availableVersion: BundleVersion(shortVersion: versionText, buildVersion: versionText),
+            installedVersion: installedVersion,
+            appPath: appPath
+        )
     }
 
     private func installManualUpdate(from release: ReleaseInfo) async throws {
@@ -299,12 +360,11 @@ final class UpdateManager: ObservableObject {
         }
     }
 
-    private func launchBrewUpgradeInTerminal() async throws {
+    private func launchBrewUpgradeInTerminal(appPath: String) async throws {
         state = .installing("已打开终端，按里面提示完成更新。")
         let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("CodexQuotaBrew-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
         let scriptURL = workspace.appendingPathComponent("brew-update.sh")
-        let bundlePath = Bundle.main.bundlePath
         let script = """
         #!/bin/zsh
         export PATH="/opt/homebrew/bin:/usr/local/bin:/opt/homebrew/sbin:/usr/local/sbin:/usr/bin:/bin:$PATH"
@@ -324,7 +384,7 @@ final class UpdateManager: ObservableObject {
         if [ "$STATUS" -eq 0 ]; then
           echo "更新完成，软件会重新打开。"
           osascript -e 'tell application id "\(Self.bundleID)" to quit' >/dev/null 2>&1 || true
-          open -n \(Self.shellQuote(bundlePath))
+          open -n \(Self.shellQuote(appPath))
         else
           echo "更新没完成，请看上面的提示。"
         fi

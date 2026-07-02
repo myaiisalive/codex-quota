@@ -7,11 +7,10 @@ final class UpdateManager: ObservableObject {
     enum InstallMethod {
         case manual
         case brew(appPath: String)
-        case brewTapLag(availableVersion: String)
 
         var primaryActionTitle: String {
             switch self {
-            case .manual, .brewTapLag:
+            case .manual:
                 return "自动更新"
             case .brew:
                 return "打开终端更新"
@@ -24,8 +23,6 @@ final class UpdateManager: ObservableObject {
                 return "会自动下载安装新版本，替换当前软件，然后重新打开。"
             case .brew:
                 return "会打开终端并自动执行 Homebrew 更新命令，方便直接看到进度和系统提示。"
-            case .brewTapLag(let availableVersion):
-                return "Homebrew 里的版本现在还是 \(availableVersion)，还没同步到这个新版本。会直接下载安装新版本，替换当前软件，然后重新打开。"
             }
         }
     }
@@ -109,7 +106,7 @@ final class UpdateManager: ObservableObject {
     var statusText: String {
         switch state {
         case .idle:
-            return "会联网到 GitHub 看看有没有新版本。"
+            return "会检查有没有新版本。"
         case .checking:
             return "正在检查新版本…"
         case .upToDate:
@@ -140,13 +137,12 @@ final class UpdateManager: ObservableObject {
 
         state = .checking
         do {
-            let release = try await fetchLatestRelease()
-            let installMethod = try await detectInstallMethod(for: release)
-            let hasUpdate = release.version.compare(to: .current) == .orderedDescending
+            let updateTarget = try await detectUpdateTarget()
+            let hasUpdate = updateTarget.release.version.compare(to: .current) == .orderedDescending
             let now = Date()
             lastCheckedAt = now
             UserDefaults.standard.set(now, forKey: Self.lastCheckedAtKey)
-            state = hasUpdate ? .available(release, installMethod) : .upToDate
+            state = hasUpdate ? .available(updateTarget.release, updateTarget.method) : .upToDate
             return hasUpdate
         } catch {
             state = .failed(userFacingErrorMessage(for: error))
@@ -171,8 +167,6 @@ final class UpdateManager: ObservableObject {
             try await installManualUpdate(from: release)
         case .brew(let appPath):
             try await launchBrewUpgradeInTerminal(appPath: appPath)
-        case .brewTapLag:
-            try await installManualUpdate(from: release)
         }
     }
 
@@ -192,18 +186,35 @@ final class UpdateManager: ObservableObject {
         let availableVersion: BundleVersion
         let installedVersion: BundleVersion?
         let appPath: String?
+
+        func managesCurrentApp(at bundlePath: String) -> Bool {
+            guard installedVersion != nil,
+                  let appPath else { return false }
+            return Self.normalize(path: appPath) == Self.normalize(path: bundlePath)
+        }
+
+        private static func normalize(path: String) -> String {
+            URL(fileURLWithPath: path)
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
+                .path
+        }
     }
 
-    private func detectInstallMethod(for release: ReleaseInfo) async throws -> InstallMethod {
-        guard let brewInfo = try await loadBrewCaskInfo(),
-              brewInfo.installedVersion != nil else {
-            return .manual
+    private func detectUpdateTarget() async throws -> (release: ReleaseInfo, method: InstallMethod) {
+        if let brewInfo = try await loadBrewCaskInfo(),
+           brewInfo.managesCurrentApp(at: Bundle.main.bundlePath) {
+            let release = releaseInfoForHomebrewVersion(brewInfo.availableVersion)
+            return (release, .brew(appPath: brewInfo.appPath ?? Bundle.main.bundlePath))
         }
 
-        if brewInfo.availableVersion.compare(to: release.version) != .orderedAscending {
-            return .brew(appPath: brewInfo.appPath ?? Bundle.main.bundlePath)
-        }
-        return .brewTapLag(availableVersion: brewInfo.availableVersion.shortVersion)
+        return (try await fetchLatestRelease(), .manual)
+    }
+
+    private func releaseInfoForHomebrewVersion(_ version: BundleVersion) -> ReleaseInfo {
+        let tagName = "v\(version.shortVersion)"
+        let htmlURL = URL(string: "https://github.com/myaiisalive/codex-quota/releases/tag/\(tagName)")!
+        return ReleaseInfo(tagName: tagName, htmlURL: htmlURL, body: "", assets: [])
     }
 
     private func loadBrewCaskInfo() async throws -> BrewCaskInfo? {

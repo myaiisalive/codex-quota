@@ -112,18 +112,21 @@ gh release create v0.3.5 \
   dist/CodexQuota-0.3.5-arm64.zip
 ```
 
-### 2. Update the Homebrew tap
+### 2. Update the Homebrew tap in the same release run
 
-After the GitHub Release is live, grab the new SHA256 digests and update the Cask file in [myaiisalive/homebrew-tap](https://github.com/myaiisalive/homebrew-tap):
+A release is not complete until the Homebrew tap is updated to the same version in the same publishing run. After the GitHub Release is live, grab the new SHA256 digests and update the Cask file in [myaiisalive/homebrew-tap](https://github.com/myaiisalive/homebrew-tap):
 
 ```sh
 # fetch sha256 from the release
 gh release view v0.3.5 --json assets --jq '.assets[] | "\(.name) \(.digest)"'
 
 # edit Casks/codex-quota.rb: bump version + both sha256 values, then push
+# verify Homebrew sees the same version
+brew update
+brew info --cask --json=v2 codex-quota | jq '.casks[0] | {version, installed, outdated}'
 ```
 
-Users will get the update on their next `brew upgrade --cask codex-quota`.
+Users will get the update on their next `brew upgrade --cask codex-quota`. Do not announce a release until both the GitHub Release and the Homebrew tap are on the same version.
 
 ## Build from source
 

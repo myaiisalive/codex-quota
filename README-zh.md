@@ -112,18 +112,21 @@ gh release create v0.3.5 \
   dist/CodexQuota-0.3.5-arm64.zip
 ```
 
-### 2. 更新 Homebrew Tap
+### 2. 同一轮里更新 Homebrew Tap
 
-发完 GitHub Release 之后，拿新包的 SHA256，更新 tap 仓库的 Cask 文件（[myaiisalive/homebrew-tap](https://github.com/myaiisalive/homebrew-tap)）：
+一次发版只有在 GitHub Release 和 Homebrew tap 都更新到同一个版本后才算完成。发完 GitHub Release 之后，拿新包的 SHA256，更新 tap 仓库的 Cask 文件（[myaiisalive/homebrew-tap](https://github.com/myaiisalive/homebrew-tap)）：
 
 ```sh
 # 从 release 拿 sha256
 gh release view v0.3.5 --json assets --jq '.assets[] | "\(.name) \(.digest)"'
 
 # 更新 Casks/codex-quota.rb 里的 version 和两个 sha256，然后推送
+# 验证 Homebrew 看到的也是同一个版本
+brew update
+brew info --cask --json=v2 codex-quota | jq '.casks[0] | {version, installed, outdated}'
 ```
 
-Cask 文件路径：`Casks/codex-quota.rb`，修改 `version`、两个 `sha256` 字段后推送即可，用户下次运行 `brew upgrade --cask codex-quota` 就会拿到新版本。
+Cask 文件路径：`Casks/codex-quota.rb`，修改 `version`、两个 `sha256` 字段后推送即可，用户下次运行 `brew upgrade --cask codex-quota` 就会拿到新版本。在 GitHub Release 和 Homebrew tap 版本一致之前，不要对外宣布这次发版已经完成。
 
 
 

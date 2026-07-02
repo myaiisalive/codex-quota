@@ -172,7 +172,7 @@ struct QuotaView: View {
             if collapsed {
                 collapsedBody
             } else {
-                expandedBody(width: panelStyle == .card ? 252 : 240)
+                expandedBody(width: panelStyle == .card ? 252 : 300)
             }
         }
         .padding(padding)
@@ -317,7 +317,7 @@ struct QuotaView: View {
                     Text(msg)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
-                        .frame(maxWidth: 220, alignment: .leading)
+                        .frame(maxWidth: 280, alignment: .leading)
                 }
                 Text("更新于 \(timeAgo(snap.capturedAt))")
                     .font(.system(size: 10))
@@ -329,7 +329,7 @@ struct QuotaView: View {
                 Text(err)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                    .frame(maxWidth: 220, alignment: .leading)
+                    .frame(maxWidth: 280, alignment: .leading)
             } else {
                 ProgressView().controlSize(.small)
             }
@@ -916,7 +916,7 @@ struct QuotaView: View {
                 .foregroundStyle(.tertiary)
             }
         }
-        .frame(width: 248, alignment: .leading)
+        .frame(width: 308, alignment: .leading)
     }
 
     @ViewBuilder

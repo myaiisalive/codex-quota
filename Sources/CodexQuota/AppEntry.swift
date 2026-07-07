@@ -24,6 +24,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var isRestoringFromEdgeBar = false
     private var postRestoreGuardFrame: NSRect?
     private var postRestoreGuardTask: DispatchWorkItem?
+    private var panelDragStartFrame: NSRect?
+    private var dragStartRestoredPanelTopLeft: NSPoint?
+    private var restoredPanelSize: CGSize?
+    private var restoreExpansionEdgeBarFrame: NSRect?
+    private var attachedEdgeCrossAxisCenter: CGFloat?
 
     private var edgeSnapEnabled: Bool {
         UserDefaults.standard.bool(forKey: FloatingPanelState.edgeSnapEnabledKey)
@@ -325,18 +330,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 edgeBarNeedsReentry = panel.frame.contains(NSEvent.mouseLocation)
                 pendingEdgeBarReentryCheck = false
             }
+        } else if edgeSnapEnabled,
+                  panelState.attachedEdge != nil,
+                  restoreExpansionEdgeBarFrame != nil {
+            applyRestoredPanelFrame(panel)
+            if needsRestoredPanelPosition {
+                finishRestoringPanel(panel)
+            }
         } else if needsRestoredPanelPosition {
             applyRestoredPanelFrame(panel)
-            needsRestoredPanelPosition = false
-            isPanelHovered = panelContainsMouse(panel)
-            isRestoringFromEdgeBar = false
-            if isPanelHovered {
-                clearPostRestoreGuard()
-            } else {
-                armPostRestoreGuardIfNeeded()
-            }
+            finishRestoringPanel(panel)
         } else {
             refreshEdgeAttachmentForCurrentPosition(panel)
+        }
+    }
+
+    private func finishRestoringPanel(_ panel: FloatingPanel) {
+        needsRestoredPanelPosition = false
+        isPanelHovered = panelContainsMouse(panel)
+        isRestoringFromEdgeBar = false
+        if isPanelHovered {
+            clearPostRestoreGuard()
+        } else {
+            armPostRestoreGuardIfNeeded()
         }
     }
 
@@ -353,6 +369,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 edgeBarNeedsReentry = false
                 isRestoringFromEdgeBar = true
                 postRestoreGuardFrame = panel?.frame.insetBy(dx: -2, dy: -2)
+                restoreExpansionEdgeBarFrame = panel?.frame
                 needsRestoredPanelPosition = true
                 panelState.showsEdgeBar = false
             } else {
@@ -375,16 +392,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
         isDraggingPanel = true
+        restoreExpansionEdgeBarFrame = nil
+        if panelDragStartFrame == nil {
+            panelDragStartFrame = frame
+            dragStartRestoredPanelTopLeft = restoredPanelTopLeft
+        }
         edgeCollapseTask?.cancel()
         edgeCollapseTask = nil
-        pendingAttachedEdge = nearestEdge(for: frame)
+        pendingAttachedEdge = nearestEdge(
+            for: frame,
+            dragStartFrame: panelDragStartFrame,
+            currentEdge: panelState.attachedEdge
+        )
     }
 
     private func handlePanelDragEnded(_ frame: NSRect) {
+        let wasEdgeBarVisible = panelState.isEdgeBarVisible
+        defer {
+            panelDragStartFrame = nil
+            dragStartRestoredPanelTopLeft = nil
+        }
         isDraggingPanel = false
         guard edgeSnapEnabled else {
             pendingAttachedEdge = nil
             panelState.attachedEdge = nil
+            attachedEdgeCrossAxisCenter = nil
             panelState.showsEdgeBar = false
             edgeBarNeedsReentry = false
             pendingEdgeBarReentryCheck = false
@@ -392,16 +424,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             clearPostRestoreGuard()
             return
         }
-        let edge = pendingAttachedEdge ?? nearestEdge(for: frame)
+        let edge = pendingAttachedEdge ?? nearestEdge(
+            for: frame,
+            dragStartFrame: panelDragStartFrame,
+            currentEdge: panelState.attachedEdge
+        )
         pendingAttachedEdge = nil
 
         guard let edge else {
             panelState.attachedEdge = nil
+            attachedEdgeCrossAxisCenter = nil
             panelState.showsEdgeBar = false
             edgeBarNeedsReentry = false
             pendingEdgeBarReentryCheck = false
             isRestoringFromEdgeBar = false
             clearPostRestoreGuard()
+            return
+        }
+        attachedEdgeCrossAxisCenter = edge.isHorizontalBar ? frame.midX : frame.midY
+        if wasEdgeBarVisible {
+            updateRestoredPositionAfterEdgeBarDrag(endFrame: frame, edge: edge)
+            panelState.attachedEdge = edge
+            panelState.showsEdgeBar = true
+            edgeBarNeedsReentry = false
+            pendingEdgeBarReentryCheck = false
+            isRestoringFromEdgeBar = false
+            clearPostRestoreGuard()
+            if let panel {
+                applyAttachedEdgeFrame(panel)
+            }
             return
         }
         panelState.attachedEdge = edge
@@ -419,6 +470,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             isDraggingPanel = false
             restoredPanelTopLeft = nil
             needsRestoredPanelPosition = false
+            restoreExpansionEdgeBarFrame = nil
+            attachedEdgeCrossAxisCenter = nil
             panelState.attachedEdge = nil
             panelState.showsEdgeBar = false
             edgeBarNeedsReentry = false
@@ -461,6 +514,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.edgeBarNeedsReentry = requiresEdgeBarReentry
             self.pendingEdgeBarReentryCheck = requiresEdgeBarReentry
             self.clearPostRestoreGuard()
+            self.restoreExpansionEdgeBarFrame = nil
             self.panelState.showsEdgeBar = true
         }
         edgeCollapseTask = task
@@ -527,6 +581,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard panelState.attachedEdge == nil else { return }
         guard let edge = nearestEdge(for: panel.frame) else { return }
         panelState.attachedEdge = edge
+        attachedEdgeCrossAxisCenter = edge.isHorizontalBar ? panel.frame.midX : panel.frame.midY
         panelState.showsEdgeBar = false
         scheduleEdgeCollapseIfNeeded()
     }
@@ -542,19 +597,107 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func rememberRestoredPanelPosition(_ panel: FloatingPanel) {
         restoredPanelTopLeft = NSPoint(x: panel.frame.minX, y: panel.frame.maxY)
+        restoredPanelSize = panel.frame.size
     }
 
     private func applyRestoredPanelFrame(_ panel: FloatingPanel) {
-        guard let topLeft = restoredPanelTopLeft else { return }
-        let target = NSRect(
-            x: topLeft.x,
-            y: topLeft.y - panel.frame.height,
-            width: panel.frame.width,
-            height: panel.frame.height
-        )
+        let size = panel.frame.size
+        var target: NSRect
+
+        if let edge = panelState.attachedEdge,
+           let barFrame = restoreExpansionEdgeBarFrame,
+           let screenFrame = screenForFrame(barFrame)?.frame {
+            let origin: NSPoint
+            switch edge {
+            case .left:
+                var y = barFrame.midY - size.height / 2
+                y = min(max(y, screenFrame.minY), screenFrame.maxY - size.height)
+                origin = NSPoint(x: screenFrame.minX, y: y)
+            case .right:
+                var y = barFrame.midY - size.height / 2
+                y = min(max(y, screenFrame.minY), screenFrame.maxY - size.height)
+                origin = NSPoint(x: screenFrame.maxX - size.width, y: y)
+            case .top:
+                var x = barFrame.midX - size.width / 2
+                x = min(max(x, screenFrame.minX), screenFrame.maxX - size.width)
+                origin = NSPoint(x: x, y: screenFrame.maxY - size.height)
+            case .bottom:
+                var x = barFrame.midX - size.width / 2
+                x = min(max(x, screenFrame.minX), screenFrame.maxX - size.width)
+                origin = NSPoint(x: x, y: screenFrame.minY)
+            }
+            target = NSRect(origin: origin, size: size)
+        } else if let topLeft = restoredPanelTopLeft {
+            target = NSRect(
+                x: topLeft.x,
+                y: topLeft.y - size.height,
+                width: size.width,
+                height: size.height
+            )
+            if let visible = screenForFrame(target)?.visibleFrame ?? panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame {
+                target.origin.x = min(max(target.origin.x, visible.minX), visible.maxX - target.width)
+                target.origin.y = min(max(target.origin.y, visible.minY), visible.maxY - target.height)
+            }
+        } else {
+            return
+        }
+
         if target.integral != panel.frame.integral {
             panel.setFrame(target, display: true, animate: false)
         }
+    }
+
+    private func updateRestoredPositionAfterEdgeBarDrag(endFrame: NSRect, edge: FloatingEdgeAttachment) {
+        if let restoredPanelSize,
+           let topLeft = restoredPanelTopLeft(for: edge, edgeBarFrame: endFrame, restoredSize: restoredPanelSize) {
+            restoredPanelTopLeft = topLeft
+            return
+        }
+
+        guard let startFrame = panelDragStartFrame else {
+            restoredPanelTopLeft = NSPoint(x: endFrame.minX, y: endFrame.maxY)
+            return
+        }
+
+        let deltaX = endFrame.origin.x - startFrame.origin.x
+        let deltaY = endFrame.origin.y - startFrame.origin.y
+
+        if let startTopLeft = dragStartRestoredPanelTopLeft {
+            restoredPanelTopLeft = NSPoint(
+                x: startTopLeft.x + deltaX,
+                y: startTopLeft.y + deltaY
+            )
+        } else {
+            restoredPanelTopLeft = NSPoint(x: endFrame.minX, y: endFrame.maxY)
+        }
+    }
+
+    private func restoredPanelTopLeft(
+        for edge: FloatingEdgeAttachment,
+        edgeBarFrame: NSRect,
+        restoredSize: CGSize
+    ) -> NSPoint? {
+        guard restoredSize.width > 0, restoredSize.height > 0 else { return nil }
+        let visible = screenForFrame(edgeBarFrame)?.visibleFrame ?? panel?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+        guard let visible else { return nil }
+
+        let origin: NSPoint
+        switch edge {
+        case .left:
+            let y = min(max(edgeBarFrame.midY - restoredSize.height / 2, visible.minY), visible.maxY - restoredSize.height)
+            origin = NSPoint(x: visible.minX, y: y)
+        case .right:
+            let y = min(max(edgeBarFrame.midY - restoredSize.height / 2, visible.minY), visible.maxY - restoredSize.height)
+            origin = NSPoint(x: visible.maxX - restoredSize.width, y: y)
+        case .top:
+            let x = min(max(edgeBarFrame.midX - restoredSize.width / 2, visible.minX), visible.maxX - restoredSize.width)
+            origin = NSPoint(x: x, y: visible.maxY - restoredSize.height)
+        case .bottom:
+            let x = min(max(edgeBarFrame.midX - restoredSize.width / 2, visible.minX), visible.maxX - restoredSize.width)
+            origin = NSPoint(x: x, y: visible.minY)
+        }
+
+        return NSPoint(x: origin.x, y: origin.y + restoredSize.height)
     }
 
     private func panelContainsMouse(_ panel: FloatingPanel? = nil) -> Bool {
@@ -562,7 +705,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return panel.frame.insetBy(dx: -1, dy: -1).contains(NSEvent.mouseLocation)
     }
 
-    private func nearestEdge(for frame: NSRect) -> FloatingEdgeAttachment? {
+    private func nearestEdge(
+        for frame: NSRect,
+        dragStartFrame: NSRect? = nil,
+        currentEdge: FloatingEdgeAttachment? = nil
+    ) -> FloatingEdgeAttachment? {
         guard let visible = visibleFrame(for: frame) else { return nil }
         let threshold: CGFloat = 56
         let distances: [(FloatingEdgeAttachment, CGFloat)] = [
@@ -571,44 +718,95 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             (.top, frame.maxY >= visible.maxY ? 0 : visible.maxY - frame.maxY),
             (.bottom, frame.minY <= visible.minY ? 0 : frame.minY - visible.minY)
         ]
-        guard let closest = distances.min(by: { $0.1 < $1.1 }),
-              closest.1 <= threshold else {
+        let candidates = distances.filter { $0.1 <= threshold }
+        guard !candidates.isEmpty else {
             return nil
         }
-        return closest.0
+        if candidates.count == 1 {
+            return candidates[0].0
+        }
+
+        if let dragStartFrame {
+            let deltaX = frame.origin.x - dragStartFrame.origin.x
+            let deltaY = frame.origin.y - dragStartFrame.origin.y
+            let horizontalPreferred = abs(deltaX) > abs(deltaY) + 6
+            let verticalPreferred = abs(deltaY) > abs(deltaX) + 6
+
+            if horizontalPreferred {
+                let preferred: FloatingEdgeAttachment = deltaX < 0 ? .left : .right
+                if candidates.contains(where: { $0.0 == preferred }) {
+                    return preferred
+                }
+            }
+
+            if verticalPreferred {
+                let preferred: FloatingEdgeAttachment = deltaY < 0 ? .bottom : .top
+                if candidates.contains(where: { $0.0 == preferred }) {
+                    return preferred
+                }
+            }
+        }
+
+        if let currentEdge,
+           candidates.contains(where: { $0.0 == currentEdge }) {
+            return currentEdge
+        }
+
+        return candidates.min(by: { $0.1 < $1.1 })?.0
+    }
+
+    private func screenForFrame(_ frame: NSRect) -> NSScreen? {
+        let probe = NSPoint(x: frame.midX, y: frame.midY)
+        if let screen = NSScreen.screens.first(where: { $0.frame.contains(probe) }) {
+            return screen
+        }
+
+        var intersectingScreen: NSScreen?
+        var largestIntersectionArea: CGFloat = 0
+        for screen in NSScreen.screens {
+            let intersection = screen.frame.intersection(frame)
+            guard !intersection.isNull, intersection.width > 0, intersection.height > 0 else {
+                continue
+            }
+            let area = intersection.width * intersection.height
+            if area > largestIntersectionArea {
+                largestIntersectionArea = area
+                intersectingScreen = screen
+            }
+        }
+
+        return intersectingScreen ?? panel?.screen ?? NSScreen.main
     }
 
     private func visibleFrame(for frame: NSRect) -> NSRect? {
-        let probe = NSPoint(x: frame.midX, y: frame.midY)
-        if let screen = NSScreen.screens.first(where: { $0.visibleFrame.contains(probe) || $0.frame.contains(probe) }) {
-            return screen.visibleFrame
-        }
-        return panel?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+        screenForFrame(frame)?.visibleFrame
     }
 
     private func applyAttachedEdgeFrame(_ panel: FloatingPanel) {
         guard let edge = panelState.attachedEdge,
-              let visible = panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame else {
+              let screenFrame = screenForFrame(panel.frame)?.frame else {
             return
         }
 
         let current = panel.frame
         let targetSize = current.size
+        let fallbackCross: CGFloat = edge.isHorizontalBar ? current.midX : current.midY
+        let cross = attachedEdgeCrossAxisCenter ?? fallbackCross
         let origin: NSPoint
 
         switch edge {
         case .left:
-            let y = min(max(current.midY - targetSize.height / 2, visible.minY), visible.maxY - targetSize.height)
-            origin = NSPoint(x: visible.minX, y: y)
+            let y = min(max(cross - targetSize.height / 2, screenFrame.minY), screenFrame.maxY - targetSize.height)
+            origin = NSPoint(x: screenFrame.minX, y: y)
         case .right:
-            let y = min(max(current.midY - targetSize.height / 2, visible.minY), visible.maxY - targetSize.height)
-            origin = NSPoint(x: visible.maxX - targetSize.width, y: y)
+            let y = min(max(cross - targetSize.height / 2, screenFrame.minY), screenFrame.maxY - targetSize.height)
+            origin = NSPoint(x: screenFrame.maxX - targetSize.width, y: y)
         case .top:
-            let x = min(max(current.midX - targetSize.width / 2, visible.minX), visible.maxX - targetSize.width)
-            origin = NSPoint(x: x, y: visible.maxY - targetSize.height)
+            let x = min(max(cross - targetSize.width / 2, screenFrame.minX), screenFrame.maxX - targetSize.width)
+            origin = NSPoint(x: x, y: screenFrame.maxY - targetSize.height)
         case .bottom:
-            let x = min(max(current.midX - targetSize.width / 2, visible.minX), visible.maxX - targetSize.width)
-            origin = NSPoint(x: x, y: visible.minY)
+            let x = min(max(cross - targetSize.width / 2, screenFrame.minX), screenFrame.maxX - targetSize.width)
+            origin = NSPoint(x: x, y: screenFrame.minY)
         }
 
         let target = NSRect(origin: origin, size: targetSize)

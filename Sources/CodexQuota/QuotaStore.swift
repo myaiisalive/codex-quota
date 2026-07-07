@@ -70,8 +70,7 @@ final class QuotaStore: ObservableObject {
     }
 
     func start() {
-        reloadAccountProfile()
-        reload()
+        reloadCodexState()
         watcher = SessionsWatcher(
             path: QuotaReader.sessionsRoot.path,
             onChange: { [weak self] in self?.reload() }
@@ -80,11 +79,10 @@ final class QuotaStore: ObservableObject {
         authWatcher = SessionsWatcher(
             path: CodexAccountProfileReader.watchRootPath,
             debounceSeconds: 0.4,
-            onChange: { [weak self] in self?.reloadAccountProfile() }
+            onChange: { [weak self] in self?.reloadCodexState() }
         )
         authWatcher?.start()
         rebuildTimer()
-        reloadApiBalance()
         rebuildBalanceTimer()
 
         // 监听设置变化，自动重建 timer
@@ -95,6 +93,12 @@ final class QuotaStore: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in self?.rebuildTimerIfNeeded() }
         }
+    }
+
+    private func reloadCodexState() {
+        reloadAccountProfile()
+        reload()
+        reloadApiBalance()
     }
 
     private func rebuildBalanceTimer() {

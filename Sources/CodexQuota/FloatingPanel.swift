@@ -75,6 +75,10 @@ final class FloatingPanel: NSPanel {
 
     override var canBecomeKey: Bool { true }
 
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        frameRect
+    }
+
     private var dragOffset: NSPoint = .zero
     private var didDragWindow = false
     private var dragEndTask: DispatchWorkItem?

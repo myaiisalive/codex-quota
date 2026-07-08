@@ -73,7 +73,8 @@ struct CodexConfig: Equatable {
 
     private static func isOpenAIOfficial(_ url: String) -> Bool {
         guard let h = URL(string: url)?.host?.lowercased() else { return false }
-        return h.hasSuffix("openai.com") || h.hasSuffix("openai.azure.com")
+        // ChatGPT 登录态的 Codex 官方请求会走 chatgpt.com，不应误判成第三方接口。
+        return h.hasSuffix("openai.com") || h.hasSuffix("openai.azure.com") || h.hasSuffix("chatgpt.com")
     }
 
     /// 在指定文本（整篇或某个 section 内）查找顶层配置值。

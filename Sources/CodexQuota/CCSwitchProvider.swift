@@ -100,28 +100,39 @@ struct CCSwitchProvider: Equatable {
         var best: (provider: CCSwitchProvider, score: Int)?
         for candidate in candidates {
             guard let score = matchScore(for: candidate, codex: codex) else { continue }
+            let resolved = candidate.resolvingMissingBaseURL(with: codex.baseUrl)
             if best == nil || score > best!.score {
-                best = (candidate, score)
+                best = (resolved, score)
             }
         }
         return best?.provider
     }
 
     private static func matchScore(for candidate: CCSwitchProvider, codex: CodexConfig) -> Int? {
-        guard let candHost = URL(string: candidate.baseUrl)?.host?.lowercased() else { return nil }
+        let candHost = URL(string: candidate.baseUrl)?.host?.lowercased()
         let exactHost = candHost == codex.host
-        let rootMatch = !exactHost && hostMatchesRoot(candHost, codex.rootDomain)
-        guard exactHost || rootMatch else { return nil }
-
-        var score = exactHost ? 400 : 200
-        if normalizeURL(candidate.baseUrl) == codex.normalizedBaseURL { score += 120 }
-        if normalize(candidate.name) == normalize(codex.providerName) { score += 80 }
-        if candidate.isCurrent { score += 40 }
-
+        let rootMatch = candHost.map { !exactHost && hostMatchesRoot($0, codex.rootDomain) } ?? false
+        let nameMatch = normalize(candidate.name) == normalize(codex.providerName)
         let activeApiKey = codex.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !activeApiKey.isEmpty,
-           let candidateApiKey = candidate.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines),
-           candidateApiKey == activeApiKey {
+        let keyMatch = !activeApiKey.isEmpty
+            && candidate.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) == activeApiKey
+
+        guard exactHost || rootMatch || (candidate.baseUrl.isEmpty && (candidate.isCurrent || nameMatch || keyMatch)) else {
+            return nil
+        }
+
+        var score: Int
+        if exactHost {
+            score = 400
+        } else if rootMatch {
+            score = 200
+        } else {
+            score = 120
+        }
+        if normalizeURL(candidate.baseUrl) == codex.normalizedBaseURL { score += 120 }
+        if nameMatch { score += 80 }
+        if candidate.isCurrent { score += 40 }
+        if keyMatch {
             score += 160
         }
         return score
@@ -155,8 +166,7 @@ struct CCSwitchProvider: Equatable {
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let us = root["usage_script"] as? [String: Any],
               (us["enabled"] as? Bool ?? true),
-              let code = us["code"] as? String,
-              let baseUrl = us["baseUrl"] as? String
+              let code = us["code"] as? String
         else { return nil }
 
         return CCSwitchProvider(
@@ -164,7 +174,7 @@ struct CCSwitchProvider: Equatable {
             name: name,
             usageScriptCode: code,
             apiKey: us["apiKey"] as? String,
-            baseUrl: baseUrl,
+            baseUrl: ((us["baseUrl"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
             accessToken: us["accessToken"] as? String,
             userId: us["userId"] as? String,
             timeoutSeconds: doubleValue(us["timeout"]),
@@ -183,5 +193,20 @@ struct CCSwitchProvider: Equatable {
         default:
             return nil
         }
+    }
+
+    private func resolvingMissingBaseURL(with fallback: String) -> CCSwitchProvider {
+        guard baseUrl.isEmpty else { return self }
+        return CCSwitchProvider(
+            rowID: rowID,
+            name: name,
+            usageScriptCode: usageScriptCode,
+            apiKey: apiKey,
+            baseUrl: fallback,
+            accessToken: accessToken,
+            userId: userId,
+            timeoutSeconds: timeoutSeconds,
+            isCurrent: isCurrent
+        )
     }
 }

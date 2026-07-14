@@ -144,7 +144,7 @@ final class UpdateManager: ObservableObject {
 
         state = .checking
         do {
-            let updateTarget = try await detectUpdateTarget()
+            let updateTarget = try await detectUpdateTarget(force: force)
             let hasUpdate = updateTarget.release.version.compare(to: .current) == .orderedDescending
             let now = Date()
             lastCheckedAt = now
@@ -216,11 +216,20 @@ final class UpdateManager: ObservableObject {
         }
     }
 
-    private func detectUpdateTarget() async throws -> (release: ReleaseInfo, method: InstallMethod) {
+    private func detectUpdateTarget(force: Bool) async throws -> (release: ReleaseInfo, method: InstallMethod) {
         if let brewInfo = try await loadBrewCaskInfo(),
            brewInfo.managesCurrentApp(at: Bundle.main.bundlePath) {
-            let release = releaseInfoForHomebrewVersion(brewInfo.availableVersion)
-            return (release, .brew(appPath: brewInfo.appPath ?? Bundle.main.bundlePath))
+            // 只有 Homebrew 安装并且用户手动检查时，才主动刷新 tap 索引。
+            let resolvedBrewInfo: BrewCaskInfo
+            if force {
+                try await refreshBrewMetadata()
+                resolvedBrewInfo = try await loadBrewCaskInfo() ?? brewInfo
+            } else {
+                resolvedBrewInfo = brewInfo
+            }
+
+            let release = releaseInfoForHomebrewVersion(resolvedBrewInfo.availableVersion)
+            return (release, .brew(appPath: resolvedBrewInfo.appPath ?? Bundle.main.bundlePath))
         }
 
         return (try await fetchLatestRelease(), .manual)
@@ -280,6 +289,20 @@ final class UpdateManager: ObservableObject {
             installedVersion: installedVersion,
             appPath: appPath
         )
+    }
+
+    private func refreshBrewMetadata() async throws {
+        guard let brewPath = Self.knownBrewPaths.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            return
+        }
+
+        let result = try await Self.runProcess(
+            executableURL: URL(fileURLWithPath: brewPath),
+            arguments: ["update"]
+        )
+        guard result.status == 0 else {
+            throw UpdateError.brewUpdateFailed
+        }
     }
 
     private func installManualUpdate(from release: ReleaseInfo) async throws {
@@ -483,6 +506,7 @@ private enum UpdateError: LocalizedError {
     case missingInstaller
     case installCancelled
     case cannotOpenTerminal
+    case brewUpdateFailed
 
     var message: String {
         switch self {
@@ -494,6 +518,8 @@ private enum UpdateError: LocalizedError {
             return "没有完成授权，更新已经取消。"
         case .cannotOpenTerminal:
             return "没能打开终端，请手动执行 brew upgrade --cask codex-quota。"
+        case .brewUpdateFailed:
+            return "没能刷新 Homebrew 的版本列表，请稍后再试。"
         }
     }
 

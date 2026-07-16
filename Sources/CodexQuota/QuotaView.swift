@@ -1141,8 +1141,7 @@ struct QuotaView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(maxWidth: 96, alignment: .leading)
-            Text(session.status.title)
-                .font(.system(size: 8.5, weight: .semibold))
+            compactCodexTaskStatusLabel(session)
             Text(compactCodexTaskDurationText(session))
                 .font(.system(size: 8.5).monospacedDigit())
         }
@@ -1170,6 +1169,7 @@ struct QuotaView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(maxWidth: 62)
+            compactCodexTaskStatusLabel(session, short: true)
             Text(compactCodexTaskDurationText(session))
                 .font(.system(size: 8.5).monospacedDigit())
         }
@@ -1182,21 +1182,8 @@ struct QuotaView: View {
     }
 
     private func compactCodexTaskBadge(_ session: CodexTaskSession) -> some View {
-        let tint = codexTaskTint(session)
         return HStack(spacing: 4) {
-            HStack(spacing: 2) {
-                Image(systemName: "terminal")
-                    .font(.system(size: 7.5, weight: .bold))
-                Text("\(compactCodexTaskCount)")
-                    .font(.system(size: 8, weight: .bold).monospacedDigit())
-            }
-            .foregroundStyle(tint)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 3)
-            .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(tint.opacity(0.14))
-            )
+            compactCodexTaskStatusCounts(vertical: false)
 
             Text(compactCodexTaskDurationText(session))
                 .font(.system(size: 8.5).monospacedDigit())
@@ -1211,6 +1198,7 @@ struct QuotaView: View {
         return VStack(spacing: 2) {
             Image(systemName: "terminal")
                 .font(.system(size: 9, weight: .semibold))
+            compactCodexTaskStatusLabel(session, short: true)
             Text(compactCodexTaskDurationText(session))
                 .font(.system(size: 7.5, weight: .medium).monospacedDigit())
                 .lineLimit(1)
@@ -1229,21 +1217,8 @@ struct QuotaView: View {
     }
 
     private func compactCodexTaskVerticalBadge(_ session: CodexTaskSession) -> some View {
-        let tint = codexTaskTint(session)
         return VStack(spacing: 2) {
-            HStack(spacing: 2) {
-                Image(systemName: "terminal")
-                    .font(.system(size: 7.5, weight: .bold))
-                Text("\(compactCodexTaskCount)")
-                    .font(.system(size: 7.5, weight: .bold).monospacedDigit())
-            }
-            .foregroundStyle(tint)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 3)
-            .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(tint.opacity(0.14))
-            )
+            compactCodexTaskStatusCounts(vertical: true)
             Text(compactCodexTaskDurationText(session))
                 .font(.system(size: 7).monospacedDigit())
                 .foregroundStyle(.secondary)
@@ -1275,8 +1250,7 @@ struct QuotaView: View {
                             .lineLimit(1)
                             .truncationMode(.tail)
                             .frame(maxWidth: 72)
-                        Text(session.status.title)
-                            .font(.system(size: 8, weight: .semibold))
+                        compactCodexTaskStatusLabel(session, short: true)
                         Text(compactCodexTaskDurationText(session))
                             .font(.system(size: 8.5).monospacedDigit())
                     }
@@ -1287,6 +1261,114 @@ struct QuotaView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: compactCarouselShowsSession)
         .help("\(session.projectName) · \(session.taskName)")
+    }
+
+    private func compactCodexTaskStatusLabel(
+        _ session: CodexTaskSession,
+        short: Bool = false
+    ) -> some View {
+        HStack(spacing: 3) {
+            if session.status == .running {
+                Circle()
+                    .fill(Color.accentColor)
+                    .frame(width: 5, height: 5)
+                    .opacity(compactRunningIndicatorIsBright ? 1 : 0.35)
+                    .animation(.easeInOut(duration: 0.45), value: compactRunningIndicatorIsBright)
+            } else {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 7.5, weight: .semibold))
+            }
+            Text(short ? (session.status == .running ? "运行" : "结束") : session.status.title)
+                .font(.system(size: 8.5, weight: .semibold))
+        }
+        .foregroundStyle(codexTaskTint(session))
+        .fixedSize()
+    }
+
+    @ViewBuilder
+    private func compactCodexTaskStatusCounts(vertical: Bool) -> some View {
+        let runningCount = visibleCodexTaskSessions.filter { $0.status == .running }.count
+        let endedCount = visibleCodexTaskSessions.count - runningCount
+
+        if vertical {
+            VStack(spacing: 2) {
+                if runningCount > 0 {
+                    compactCodexTaskVerticalStatusCount(status: .running, count: runningCount)
+                }
+                if endedCount > 0 {
+                    compactCodexTaskVerticalStatusCount(status: .ended, count: endedCount)
+                }
+            }
+        } else {
+            HStack(spacing: 4) {
+                if runningCount > 0 {
+                    compactCodexTaskStatusCount(status: .running, count: runningCount)
+                }
+                if endedCount > 0 {
+                    compactCodexTaskStatusCount(status: .ended, count: endedCount)
+                }
+            }
+        }
+    }
+
+    private func compactCodexTaskStatusCount(
+        status: CodexTaskSession.Status,
+        count: Int
+    ) -> some View {
+        let tint = status == .running ? Color.accentColor : Color.secondary
+        return HStack(spacing: 2) {
+            if status == .running {
+                Circle()
+                    .fill(tint)
+                    .frame(width: 5, height: 5)
+                    .opacity(compactRunningIndicatorIsBright ? 1 : 0.35)
+                    .animation(.easeInOut(duration: 0.45), value: compactRunningIndicatorIsBright)
+            } else {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 7.5, weight: .semibold))
+            }
+            Text("\(status == .running ? "运行" : "结束")\(count)")
+                .font(.system(size: 8, weight: .bold).monospacedDigit())
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 3)
+        .background(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(tint.opacity(0.14))
+        )
+    }
+
+    private func compactCodexTaskVerticalStatusCount(
+        status: CodexTaskSession.Status,
+        count: Int
+    ) -> some View {
+        let tint = status == .running ? Color.accentColor : Color.secondary
+        return VStack(spacing: 1) {
+            if status == .running {
+                Circle()
+                    .fill(tint)
+                    .frame(width: 5, height: 5)
+                    .opacity(compactRunningIndicatorIsBright ? 1 : 0.35)
+                    .animation(.easeInOut(duration: 0.45), value: compactRunningIndicatorIsBright)
+            } else {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 7.5, weight: .semibold))
+            }
+            Text("\(status == .running ? "运行" : "结束")\(count)")
+                .font(.system(size: 7, weight: .bold).monospacedDigit())
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 3)
+        .padding(.vertical, 3)
+        .background(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(tint.opacity(0.14))
+        )
+    }
+
+    private var compactRunningIndicatorIsBright: Bool {
+        Int(sessionNow.timeIntervalSinceReferenceDate).isMultiple(of: 2)
     }
 
     private func codexTaskTint(_ session: CodexTaskSession) -> Color {

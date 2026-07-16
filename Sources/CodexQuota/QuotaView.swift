@@ -853,14 +853,14 @@ struct QuotaView: View {
             quota: AnyView(horizontalEdgeQuotaContent),
             placement: .horizontalEdge
         )
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(Color(nsColor: .windowBackgroundColor).opacity(0.96))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.05), radius: 4, y: 1)
@@ -872,15 +872,15 @@ struct QuotaView: View {
             quota: AnyView(verticalEdgeQuotaContent),
             placement: .verticalEdge
         )
-        .padding(.horizontal, 4)
-        .padding(.vertical, 8)
-        .frame(width: visibleCodexTaskSessions.isEmpty || !compactSessionStyle.showsAllSessions ? 34 : 220)
+        .padding(.horizontal, 3)
+        .padding(.vertical, 6)
+        .frame(width: visibleCodexTaskSessions.isEmpty || !compactSessionStyle.showsAllSessions ? 30 : 96)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color(nsColor: .windowBackgroundColor).opacity(0.96))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.05), radius: 4, y: 1)
@@ -1233,7 +1233,7 @@ struct QuotaView: View {
     }
 
     private var horizontalEdgeQuotaContent: some View {
-        HStack(spacing: 7) {
+        HStack(spacing: 5) {
             if let current = store.currentSourceEntry {
                 edgeBarActiveSourceChip(current)
             }
@@ -1246,7 +1246,7 @@ struct QuotaView: View {
     }
 
     private var verticalEdgeQuotaContent: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 4) {
             if let current = store.currentSourceEntry {
                 edgeBarActiveSourceVertical(current)
             }
@@ -2296,18 +2296,10 @@ struct QuotaView: View {
         quota: AnyView,
         sessions: [CodexTaskSession]
     ) -> some View {
-        if compactSessionStyle == .timeline {
-            return AnyView(
-                HStack(spacing: 8) {
-                    quota
-                    compactHorizontalTimeline(sessions)
-                }
-            )
-        }
-
+        // 横向吸附固定单行高度，把可用宽度优先留给会话和项目名称。
         let columnCount = min(3, max(1, sessions.count))
-        let itemWidth: CGFloat = 176
-        let spacing: CGFloat = 5
+        let itemWidth: CGFloat = 268
+        let spacing: CGFloat = 2
         let columns = Array(
             repeating: GridItem(.fixed(itemWidth), spacing: spacing),
             count: columnCount
@@ -2315,16 +2307,11 @@ struct QuotaView: View {
         let gridWidth = CGFloat(columnCount) * itemWidth + CGFloat(columnCount - 1) * spacing
 
         return AnyView(
-            HStack(spacing: 8) {
+            HStack(spacing: 4) {
                 quota
                 LazyVGrid(columns: columns, alignment: .leading, spacing: spacing) {
-                    ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
-                        compactSessionItem(
-                            session,
-                            index: index,
-                            count: sessions.count,
-                            width: itemWidth
-                        )
+                    ForEach(sessions) { session in
+                        compactHorizontalEdgeSessionItem(session, width: itemWidth)
                     }
                 }
                 .frame(width: gridWidth)
@@ -2332,101 +2319,153 @@ struct QuotaView: View {
         )
     }
 
-    private func compactHorizontalTimeline(_ sessions: [CodexTaskSession]) -> some View {
-        let rows = stride(from: 0, to: sessions.count, by: 3).map { start in
-            Array(sessions[start..<min(start + 3, sessions.count)])
-        }
-        return VStack(alignment: .leading, spacing: 5) {
-            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                HStack(spacing: 0) {
-                    ForEach(Array(row.enumerated()), id: \.element.id) { index, session in
-                        compactHorizontalTimelineItem(
-                            session,
-                            isFirst: index == 0,
-                            isLast: index == row.count - 1
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    private func compactHorizontalTimelineItem(
-        _ session: CodexTaskSession,
-        isFirst: Bool,
-        isLast: Bool
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 0) {
-                Rectangle()
-                    .fill(Color.secondary.opacity(isFirst ? 0 : 0.28))
-                    .frame(width: 12, height: 1)
-                compactCodexTaskStatusPoint(session, size: 7)
-                Rectangle()
-                    .fill(Color.secondary.opacity(isLast ? 0 : 0.28))
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 1)
-            }
-            HStack(spacing: 4) {
-                Text(session.taskName)
-                    .font(.system(size: 9.5, weight: .semibold))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer(minLength: 2)
-                compactCodexTaskStatusLabel(session)
-            }
-            HStack(spacing: 3) {
-                Text(session.projectName)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 2)
-                Text(compactCodexTaskDurationText(session))
-                    .monospacedDigit()
-            }
-            .font(.system(size: 8))
-            .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 4)
-        .frame(width: 176)
-        .help("\(session.projectName) · \(session.taskName)")
-    }
-
     private func compactVerticalEdgeTaskLayout(
         quota: AnyView,
         sessions: [CodexTaskSession]
     ) -> some View {
-        VStack(spacing: 6) {
+        // 纵向吸附使用窄卡片，名称超出时省略，状态和时长始终完整显示。
+        VStack(spacing: 3) {
             quota
-            ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
-                compactSessionItem(
-                    session,
-                    index: index,
-                    count: sessions.count,
-                    width: 196
-                )
+            ForEach(sessions) { session in
+                compactVerticalEdgeSessionItem(session, width: 88)
             }
         }
     }
 
-    @ViewBuilder
-    private func compactSessionItem(
+    private func compactHorizontalEdgeSessionItem(
         _ session: CodexTaskSession,
-        index: Int,
-        count: Int,
         width: CGFloat
     ) -> some View {
+        let onAccent = compactSessionStyle == .statusCards && session.status == .running
+        return HStack(spacing: 4) {
+            Image(systemName: "terminal")
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundStyle(onAccent ? Color.white : codexTaskTint(session))
+
+            Text(session.taskName)
+                .font(.system(size: 8.5, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: 76, alignment: .leading)
+                .foregroundStyle(onAccent ? Color.white : Color.primary)
+
+            Text(session.projectName)
+                .font(.system(size: 8))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: 84, alignment: .leading)
+                .foregroundStyle(onAccent ? Color.white.opacity(0.82) : Color.secondary)
+
+            Spacer(minLength: 0)
+            compactEdgeTaskStatusLabel(session, onAccent: onAccent)
+            Text(compactCodexTaskDurationText(session))
+                .font(.system(size: 7.5).monospacedDigit())
+                .foregroundStyle(onAccent ? Color.white.opacity(0.86) : Color.secondary)
+                .fixedSize()
+        }
+        .padding(.horizontal, 5)
+        .frame(width: width, height: 20)
+        .background(compactEdgeTaskBackground(session, cornerRadius: 7))
+        .overlay(compactEdgeTaskBorder(session, cornerRadius: 7))
+        .help("\(session.projectName) · \(session.taskName)")
+    }
+
+    private func compactVerticalEdgeSessionItem(
+        _ session: CodexTaskSession,
+        width: CGFloat
+    ) -> some View {
+        let onAccent = compactSessionStyle == .statusCards && session.status == .running
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 3) {
+                Image(systemName: "terminal")
+                    .font(.system(size: 7.5, weight: .semibold))
+                    .foregroundStyle(onAccent ? Color.white : codexTaskTint(session))
+                Text(session.taskName)
+                    .font(.system(size: 8, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .foregroundStyle(onAccent ? Color.white : Color.primary)
+            }
+
+            Text(session.projectName)
+                .font(.system(size: 7.5))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .foregroundStyle(onAccent ? Color.white.opacity(0.82) : Color.secondary)
+
+            HStack(spacing: 2) {
+                compactEdgeTaskStatusLabel(session, onAccent: onAccent)
+                Spacer(minLength: 1)
+                Text(compactCodexTaskDurationText(session))
+                    .font(.system(size: 7).monospacedDigit())
+                    .foregroundStyle(onAccent ? Color.white.opacity(0.86) : Color.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+            }
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 4)
+        .frame(width: width)
+        .background(compactEdgeTaskBackground(session, cornerRadius: 7))
+        .overlay(compactEdgeTaskBorder(session, cornerRadius: 7))
+        .help("\(session.projectName) · \(session.taskName)")
+    }
+
+    private func compactEdgeTaskStatusLabel(
+        _ session: CodexTaskSession,
+        onAccent: Bool
+    ) -> some View {
+        HStack(spacing: 2) {
+            compactCodexTaskStatusPoint(session, size: 4, onAccent: onAccent)
+            Text(session.status == .running ? "进行中" : "已结束")
+                .font(.system(size: 7.5, weight: .semibold))
+        }
+        .foregroundStyle(onAccent ? Color.white : codexTaskTint(session))
+        .fixedSize()
+    }
+
+    private func compactEdgeTaskBackground(
+        _ session: CodexTaskSession,
+        cornerRadius: CGFloat
+    ) -> AnyView {
+        let running = session.status == .running
+        let tint = codexTaskTint(session)
+        let color: Color
         switch compactSessionStyle {
         case .layered:
-            compactLayeredSessionRow(session, width: width)
+            color = tint.opacity(running ? 0.08 : 0.04)
         case .taskRail:
-            compactTaskRailCard(session, width: width)
+            color = tint.opacity(running ? 0.12 : 0.07)
         case .statusCards:
-            compactStatusCard(session, width: width)
+            color = running ? Color.accentColor.opacity(0.88) : Color.primary.opacity(0.06)
         case .timeline:
-            compactTimelineItem(session, index: index, count: count, width: width)
+            color = tint.opacity(0.04)
         case .stacked, .capsule, .badge, .carousel:
-            EmptyView()
+            color = Color.clear
         }
+        return AnyView(
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(color)
+        )
+    }
+
+    private func compactEdgeTaskBorder(
+        _ session: CodexTaskSession,
+        cornerRadius: CGFloat
+    ) -> AnyView {
+        let tint = codexTaskTint(session)
+        let opacity: Double
+        switch compactSessionStyle {
+        case .layered: opacity = 0.14
+        case .taskRail: opacity = 0.22
+        case .statusCards: opacity = session.status == .running ? 0.9 : 0.10
+        case .timeline: opacity = 0.10
+        case .stacked, .capsule, .badge, .carousel: opacity = 0
+        }
+        return AnyView(
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .stroke(tint.opacity(opacity), lineWidth: 1)
+        )
     }
 
     private func compactLayeredSessionRow(
@@ -2969,17 +3008,17 @@ struct QuotaView: View {
     }
 
     private func edgeBarActiveSourceChip(_ entry: UsageSourceEntry) -> some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 3) {
             Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 8, weight: .bold))
+                .font(.system(size: 7.5, weight: .bold))
             Text(entry.compactLabel)
-                .font(.system(size: 9, weight: .semibold))
+                .font(.system(size: 8.5, weight: .semibold))
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
         .foregroundStyle(Color.accentColor)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 1)
         .background(
             Capsule()
                 .fill(Color.accentColor.opacity(0.12))
@@ -2987,14 +3026,14 @@ struct QuotaView: View {
     }
 
     private func edgeBarActiveSourceVertical(_ entry: UsageSourceEntry) -> some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 1) {
             Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 8, weight: .bold))
+                .font(.system(size: 7.5, weight: .bold))
                 .foregroundStyle(Color.accentColor)
             Text(shortSourceLabel(entry))
                 .font(.system(size: 6.5, weight: .semibold))
                 .foregroundStyle(Color.accentColor)
-                .lineLimit(2)
+                .lineLimit(1)
                 .multilineTextAlignment(.center)
         }
     }

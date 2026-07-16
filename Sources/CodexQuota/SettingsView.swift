@@ -77,11 +77,14 @@ private struct AppearanceTab: View {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("悬浮样式")
+                    Text("原有样式")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
                     LazyVGrid(columns: [
                         GridItem(.flexible(), spacing: 12),
                         GridItem(.flexible(), spacing: 12)
                     ], spacing: 12) {
-                        ForEach(FloatingQuotaStyle.allCases) { style in
+                        ForEach(FloatingQuotaStyle.originalCases) { style in
                             FloatingStyleCard(
                                 style: style,
                                 selected: style == panelStyle,
@@ -89,7 +92,23 @@ private struct AppearanceTab: View {
                             )
                         }
                     }
-                    Text("默认还是现在这个样式，旧版本用户不需要改设置也能保持原样。")
+                    Text("新设计样式")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 2)
+                    LazyVGrid(columns: [
+                        GridItem(.flexible(), spacing: 12),
+                        GridItem(.flexible(), spacing: 12)
+                    ], spacing: 12) {
+                        ForEach(FloatingQuotaStyle.redesignedCases) { style in
+                            FloatingStyleCard(
+                                style: style,
+                                selected: style == panelStyle,
+                                onSelect: { panelStyleRaw = style.rawValue }
+                            )
+                        }
+                    }
+                    Text("原有样式全部保留。新设计样式需要手动选择，升级后不会改变当前外观。")
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                 }

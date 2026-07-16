@@ -177,6 +177,8 @@ struct QuotaView: View {
                         .stroke(urgencyTint.opacity(0.38), lineWidth: 1)
                 )
             )
+        case .commandDeck, .glassIsland, .dualRing, .receipt, .edgeMeter, .pulsePanel:
+            redesignedPanel(panelStyle)
         }
     }
 
@@ -195,6 +197,644 @@ struct QuotaView: View {
         .padding(padding)
         .background(background)
         .overlay(overlay)
+    }
+
+    private func redesignedPanel(_ style: FloatingQuotaStyle) -> some View {
+        Group {
+            if collapsed {
+                compactCodexTaskLayout(
+                    quota: AnyView(redesignedCollapsedRow(style)),
+                    placement: .smallWindow
+                )
+            } else {
+                redesignedExpandedBody(style)
+            }
+        }
+        .padding(collapsed ? 9 : 13)
+        .background(redesignedBackground(style))
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: redesignedCornerRadius(style),
+                style: .continuous
+            )
+        )
+        .overlay(redesignedBorder(style))
+        .shadow(color: redesignedAccent(style).opacity(0.12), radius: 10, y: 4)
+        .fixedSize()
+    }
+
+    private func redesignedCollapsedRow(_ style: FloatingQuotaStyle) -> some View {
+        HStack(spacing: 8) {
+            trafficLights
+            redesignedCompactQuota(style)
+            refreshButton()
+            collapseButton()
+        }
+    }
+
+    private func redesignedExpandedBody(_ style: FloatingQuotaStyle) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            redesignedHeader(style)
+            sourceHistorySection
+            codexTaskSessionSection
+            redesignedExpandedQuota(style)
+
+            if let snap = store.snapshot {
+                HStack(spacing: 5) {
+                    Image(systemName: "clock")
+                    Text("更新于 \(timeAgo(snap.capturedAt))")
+                }
+                .font(.system(size: 9.5))
+                .foregroundStyle(.tertiary)
+            }
+        }
+        .frame(width: style == .dualRing ? 320 : 300, alignment: .leading)
+    }
+
+    private func redesignedHeader(_ style: FloatingQuotaStyle) -> some View {
+        HStack(spacing: 7) {
+            trafficLights
+            Image(systemName: style.symbol)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(redesignedAccent(style))
+                .frame(width: 22, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(redesignedAccent(style).opacity(0.13))
+                )
+            VStack(alignment: .leading, spacing: 1) {
+                Text(style.title)
+                    .font(.system(size: 11.5, weight: .bold))
+                Text(redesignedHeaderSubtitle(style))
+                    .font(.system(size: 8.5))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 6)
+            if !store.thirdPartyApiOnly, let plan = store.snapshot?.limits.planType {
+                Text(plan.uppercased())
+                    .font(.system(size: 8, weight: .bold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(redesignedAccent(style).opacity(0.12), in: Capsule())
+                    .foregroundStyle(redesignedAccent(style))
+            }
+            refreshButton()
+            collapseButton()
+        }
+    }
+
+    @ViewBuilder
+    private func redesignedCompactQuota(_ style: FloatingQuotaStyle) -> some View {
+        if store.thirdPartyApiOnly, let balance = store.apiBalance {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(balance.providerName)
+                    .font(.system(size: 8.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text("剩 \(balanceBadgeText(balance)) \(balance.unit ?? "")")
+                    .font(.system(size: 11, weight: .bold).monospacedDigit())
+                    .foregroundStyle(balanceColor(balance.remaining ?? 0, total: balance.total))
+            }
+        } else if snapshotWindows.isEmpty {
+            Text("--")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+        } else {
+            switch style {
+            case .commandDeck:
+                redesignedCommandDeckCompact
+            case .glassIsland:
+                redesignedGlassCompact
+            case .dualRing:
+                HStack(spacing: 7) {
+                    ForEach(Array(snapshotWindows.prefix(2).enumerated()), id: \.offset) { _, window in
+                        CircleGauge(window: window)
+                    }
+                }
+            case .receipt:
+                redesignedReceiptCompact
+            case .edgeMeter:
+                redesignedEdgeMeterCompact
+            case .pulsePanel:
+                redesignedPulseCompact
+            case .classic, .capsule, .orbit, .card, .minimal, .spotlight:
+                collapsedQuotaContent
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func redesignedExpandedQuota(_ style: FloatingQuotaStyle) -> some View {
+        if store.thirdPartyApiOnly, let balance = store.apiBalance {
+            ApiBalanceRow(balance: balance)
+        } else if !snapshotWindows.isEmpty {
+            switch style {
+            case .commandDeck:
+                HStack(spacing: 7) {
+                    ForEach(Array(snapshotWindows.enumerated()), id: \.offset) { _, window in
+                        redesignedCommandDeckTile(window)
+                    }
+                }
+            case .glassIsland:
+                HStack(spacing: 7) {
+                    ForEach(Array(snapshotWindows.enumerated()), id: \.offset) { _, window in
+                        redesignedGlassTile(window)
+                    }
+                }
+            case .dualRing:
+                redesignedDualRingExpanded
+            case .receipt:
+                VStack(spacing: 0) {
+                    ForEach(Array(snapshotWindows.enumerated()), id: \.offset) { index, window in
+                        redesignedReceiptRow(window)
+                        if index < snapshotWindows.count - 1 {
+                            Text("· · · · · · · · · · · · · · · · · ·")
+                                .font(.system(size: 7).monospaced())
+                                .foregroundStyle(.tertiary)
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                }
+            case .edgeMeter:
+                VStack(spacing: 8) {
+                    ForEach(Array(snapshotWindows.enumerated()), id: \.offset) { _, window in
+                        redesignedEdgeMeterRow(window)
+                    }
+                }
+            case .pulsePanel:
+                redesignedPulseExpanded
+            case .classic, .capsule, .orbit, .card, .minimal, .spotlight:
+                EmptyView()
+            }
+        } else if let err = store.lastError {
+            Text(err)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        } else {
+            ProgressView().controlSize(.small)
+        }
+    }
+
+    private var redesignedCommandDeckCompact: some View {
+        HStack(spacing: 5) {
+            ForEach(Array(snapshotWindows.prefix(2).enumerated()), id: \.offset) { _, window in
+                HStack(spacing: 4) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(rowColor(window))
+                        .frame(width: 3, height: 20)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(window.windowLabel)
+                            .font(.system(size: 7.5, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        Text("\(Int(window.remainingPercent.rounded()))%")
+                            .font(.system(size: 11, weight: .bold).monospacedDigit())
+                            .foregroundStyle(rowColor(window))
+                    }
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.primary.opacity(0.05))
+                )
+            }
+        }
+    }
+
+    private var redesignedGlassCompact: some View {
+        HStack(spacing: 5) {
+            ForEach(Array(snapshotWindows.prefix(2).enumerated()), id: \.offset) { _, window in
+                VStack(spacing: 1) {
+                    Text(window.windowLabel)
+                        .font(.system(size: 7.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text("\(Int(window.remainingPercent.rounded()))%")
+                        .font(.system(size: 12, weight: .bold).monospacedDigit())
+                        .foregroundStyle(rowColor(window))
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule()
+                        .fill(rowColor(window).opacity(0.10))
+                )
+            }
+        }
+    }
+
+    private var redesignedReceiptCompact: some View {
+        HStack(spacing: 6) {
+            ForEach(Array(snapshotWindows.prefix(2).enumerated()), id: \.offset) { index, window in
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(window.windowLabel)
+                        .font(.system(size: 7.5))
+                        .foregroundStyle(.secondary)
+                    Text("剩 \(Int(window.remainingPercent.rounded()))%")
+                        .font(.system(size: 10.5, weight: .bold).monospacedDigit())
+                        .foregroundStyle(rowColor(window))
+                }
+                if index < min(snapshotWindows.count, 2) - 1 {
+                    Text("···")
+                        .font(.system(size: 8).monospaced())
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
+    private var redesignedEdgeMeterCompact: some View {
+        VStack(spacing: 4) {
+            ForEach(Array(snapshotWindows.prefix(2).enumerated()), id: \.offset) { _, window in
+                HStack(spacing: 5) {
+                    Text(window.windowLabel)
+                        .font(.system(size: 7.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 24, alignment: .leading)
+                    redesignedProgressTrack(window, width: 72, height: 4)
+                    Text("\(Int(window.remainingPercent.rounded()))%")
+                        .font(.system(size: 9, weight: .bold).monospacedDigit())
+                        .foregroundStyle(rowColor(window))
+                        .frame(width: 30, alignment: .trailing)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var redesignedPulseCompact: some View {
+        if let window = redesignedPulseWindow {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(rowColor(window))
+                    .frame(width: 7, height: 7)
+                    .shadow(color: rowColor(window).opacity(0.5), radius: 4)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("最低额度 · \(window.windowLabel)")
+                        .font(.system(size: 7.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text("\(Int(window.remainingPercent.rounded()))%")
+                        .font(.system(size: 15, weight: .heavy).monospacedDigit())
+                        .foregroundStyle(rowColor(window))
+                }
+            }
+        }
+    }
+
+    private var redesignedPulseWindow: RateWindow? {
+        snapshotWindows.min(by: { $0.remainingPercent < $1.remainingPercent })
+    }
+
+    private func redesignedAccent(_ style: FloatingQuotaStyle) -> Color {
+        switch style {
+        case .commandDeck: return Color(red: 0.12, green: 0.45, blue: 0.86)
+        case .glassIsland: return Color(red: 0.05, green: 0.62, blue: 0.60)
+        case .dualRing: return Color(red: 0.15, green: 0.64, blue: 0.38)
+        case .receipt: return Color(red: 0.88, green: 0.48, blue: 0.12)
+        case .edgeMeter: return Color(red: 0.03, green: 0.55, blue: 0.72)
+        case .pulsePanel: return urgencyTint
+        case .classic, .capsule, .orbit, .card, .minimal, .spotlight: return .accentColor
+        }
+    }
+
+    private func redesignedCornerRadius(_ style: FloatingQuotaStyle) -> CGFloat {
+        switch style {
+        case .glassIsland, .dualRing: return collapsed ? 22 : 26
+        case .receipt: return 11
+        case .edgeMeter: return 11
+        case .pulsePanel: return collapsed ? 14 : 18
+        default: return collapsed ? 12 : 16
+        }
+    }
+
+    private func redesignedBackground(_ style: FloatingQuotaStyle) -> AnyView {
+        let radius = redesignedCornerRadius(style)
+        switch style {
+        case .commandDeck:
+            return AnyView(
+                ZStack(alignment: .top) {
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .fill(Color(nsColor: .windowBackgroundColor).opacity(0.98))
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [redesignedAccent(style).opacity(0.18), Color.clear],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                    LinearGradient(
+                        colors: [redesignedAccent(style), Color.cyan.opacity(0.75)],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .frame(height: 3)
+                    .clipShape(Capsule())
+                    .padding(.horizontal, 13)
+                    .padding(.top, 2)
+                }
+            )
+        case .glassIsland:
+            return AnyView(
+                ZStack {
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                    Circle()
+                        .fill(Color.cyan.opacity(0.12))
+                        .frame(width: 120, height: 120)
+                        .offset(x: -95, y: -65)
+                    Circle()
+                        .fill(Color.green.opacity(0.10))
+                        .frame(width: 110, height: 110)
+                        .offset(x: 105, y: 75)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+            )
+        case .dualRing:
+            return AnyView(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(.regularMaterial)
+                    .overlay(
+                        RadialGradient(
+                            colors: [redesignedAccent(style).opacity(0.12), Color.clear],
+                            center: .topTrailing,
+                            startRadius: 0,
+                            endRadius: 220
+                        )
+                    )
+            )
+        case .receipt:
+            return AnyView(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(Color(nsColor: .windowBackgroundColor).opacity(0.98))
+                    .overlay(
+                        LinearGradient(
+                            colors: [Color.orange.opacity(0.10), Color.yellow.opacity(0.03)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+            )
+        case .edgeMeter:
+            return AnyView(
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .fill(Color(nsColor: .windowBackgroundColor).opacity(0.98))
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [redesignedAccent(style), Color.cyan],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .frame(width: 4)
+                        .padding(.vertical, 7)
+                        .padding(.leading, 3)
+                }
+            )
+        case .pulsePanel:
+            return AnyView(
+                ZStack {
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .fill(Color(nsColor: .windowBackgroundColor).opacity(0.97))
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [urgencyTint.opacity(0.22), urgencyTint.opacity(0.03)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                }
+            )
+        case .classic, .capsule, .orbit, .card, .minimal, .spotlight:
+            return AnyView(Color.clear)
+        }
+    }
+
+    private func redesignedBorder(_ style: FloatingQuotaStyle) -> AnyView {
+        let radius = redesignedCornerRadius(style)
+        let opacity: Double = style == .pulsePanel ? 0.42 : 0.24
+        return AnyView(
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .stroke(redesignedAccent(style).opacity(opacity), lineWidth: style == .receipt ? 0.8 : 1)
+        )
+    }
+
+    private func redesignedHeaderSubtitle(_ style: FloatingQuotaStyle) -> String {
+        switch style {
+        case .commandDeck: return "额度控制台"
+        case .glassIsland: return "轻盈悬浮信息"
+        case .dualRing: return "双周期刻度"
+        case .receipt: return "本次额度清单"
+        case .edgeMeter: return "快速状态扫读"
+        case .pulsePanel: return "最低额度提醒"
+        case .classic, .capsule, .orbit, .card, .minimal, .spotlight: return "Codex 额度"
+        }
+    }
+
+    private func redesignedCommandDeckTile(_ window: RateWindow) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(rowColor(window))
+                    .frame(width: 4, height: 14)
+                Text(window.windowLabel)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            Text("\(Int(window.remainingPercent.rounded()))%")
+                .font(.system(size: 22, weight: .heavy).monospacedDigit())
+                .foregroundStyle(rowColor(window))
+            Text("刷新 \(shortReset(window.resetDate))")
+                .font(.system(size: 8.5).monospacedDigit())
+                .foregroundStyle(.secondary)
+            redesignedProgressTrack(window, width: 126, height: 4)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(0.045))
+        )
+    }
+
+    private func redesignedGlassTile(_ window: RateWindow) -> some View {
+        VStack(spacing: 6) {
+            Text(window.windowLabel)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text("\(Int(window.remainingPercent.rounded()))%")
+                .font(.system(size: 21, weight: .bold).monospacedDigit())
+                .foregroundStyle(rowColor(window))
+            Text("刷新 \(shortReset(window.resetDate))")
+                .font(.system(size: 8.5).monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 11)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(rowColor(window).opacity(0.09))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.38), lineWidth: 1)
+        )
+    }
+
+    private func redesignedReceiptRow(_ window: RateWindow) -> some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(window.windowLabel)
+                    .font(.system(size: 10, weight: .bold))
+                Text("刷新 \(shortReset(window.resetDate))")
+                    .font(.system(size: 8.5).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text("剩 \(Int(window.remainingPercent.rounded()))%")
+                .font(.system(size: 16, weight: .heavy).monospacedDigit())
+                .foregroundStyle(rowColor(window))
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 4)
+    }
+
+    @ViewBuilder
+    private var redesignedDualRingExpanded: some View {
+        if snapshotWindows.count == 1, let window = snapshotWindows.first {
+            HStack(spacing: 16) {
+                CircleGauge(window: window)
+                    .scaleEffect(1.15)
+                    .frame(width: 68, height: 68)
+
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("当前额度周期")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        Text(window.windowLabel)
+                            .font(.system(size: 12, weight: .bold))
+                        Text("剩 \(Int(window.remainingPercent.rounded()))%")
+                            .font(.system(size: 14, weight: .heavy).monospacedDigit())
+                            .foregroundStyle(rowColor(window))
+                    }
+                    Text("刷新 \(shortReset(window.resetDate))")
+                        .font(.system(size: 9).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    redesignedProgressTrack(window, width: 170, height: 5)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(rowColor(window).opacity(0.07))
+            )
+        } else {
+            HStack(spacing: 18) {
+                Spacer(minLength: 0)
+                ForEach(Array(snapshotWindows.enumerated()), id: \.offset) { _, window in
+                    CircleGauge(window: window)
+                        .scaleEffect(1.18)
+                        .frame(width: 72, height: 72)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 5)
+        }
+    }
+
+    private func redesignedEdgeMeterRow(_ window: RateWindow) -> some View {
+        HStack(spacing: 9) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(rowColor(window))
+                .frame(width: 4, height: 38)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack {
+                    Text(window.windowLabel)
+                        .font(.system(size: 10, weight: .bold))
+                    Spacer()
+                    Text("剩 \(Int(window.remainingPercent.rounded()))%")
+                        .font(.system(size: 12, weight: .bold).monospacedDigit())
+                        .foregroundStyle(rowColor(window))
+                    Text(shortReset(window.resetDate))
+                        .font(.system(size: 8.5).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                redesignedProgressTrack(window, width: 270, height: 5)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.primary.opacity(0.035))
+        )
+    }
+
+    @ViewBuilder
+    private var redesignedPulseExpanded: some View {
+        if let window = redesignedPulseWindow {
+            HStack(alignment: .center, spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(rowColor(window).opacity(0.12))
+                    Circle()
+                        .stroke(rowColor(window).opacity(0.26), lineWidth: 1)
+                    VStack(spacing: 1) {
+                        Text(window.windowLabel)
+                            .font(.system(size: 8, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        Text("\(Int(window.remainingPercent.rounded()))%")
+                            .font(.system(size: 22, weight: .heavy).monospacedDigit())
+                            .foregroundStyle(rowColor(window))
+                    }
+                }
+                .frame(width: 76, height: 76)
+
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("当前最低额度")
+                        .font(.system(size: 10, weight: .bold))
+                    Text("\(window.windowLabel)将在 \(shortReset(window.resetDate)) 刷新")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                    ForEach(Array(snapshotWindows.filter { $0.windowMinutes != window.windowMinutes }.enumerated()), id: \.offset) { _, other in
+                        HStack(spacing: 5) {
+                            Text(other.windowLabel)
+                            Text("剩 \(Int(other.remainingPercent.rounded()))%")
+                                .foregroundStyle(rowColor(other))
+                        }
+                        .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .fill(rowColor(window).opacity(0.07))
+            )
+        }
+    }
+
+    private func redesignedProgressTrack(
+        _ window: RateWindow,
+        width: CGFloat,
+        height: CGFloat
+    ) -> some View {
+        let ratio = min(1, max(0, window.remainingPercent / 100))
+        return ZStack(alignment: .leading) {
+            Capsule()
+                .fill(Color.primary.opacity(0.08))
+            Capsule()
+                .fill(rowColor(window))
+                .frame(width: width * CGFloat(ratio))
+        }
+        .frame(width: width, height: height)
     }
 
     @ViewBuilder

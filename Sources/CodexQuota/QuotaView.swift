@@ -391,7 +391,7 @@ struct QuotaView: View {
 
     private var collapsedBody: some View {
         Group {
-            if panelStyle == .classic, let session = compactCodexTaskSession {
+            if let session = compactCodexTaskSession {
                 switch compactSessionStyle {
                 case .stacked:
                     VStack(alignment: .leading, spacing: 4) {
@@ -797,48 +797,166 @@ struct QuotaView: View {
 
     private var orbitCompactBody: some View {
         orbitShell(diameter: 76) {
-            Group {
-                if store.thirdPartyApiOnly, let bal = store.apiBalance {
-                    VStack(spacing: 2) {
-                        Text(balanceBadgeText(bal))
-                            .font(.system(size: 16, weight: .bold).monospacedDigit())
-                            .foregroundStyle(balanceColor(bal.remaining ?? 0, total: bal.total))
-                        Text(bal.providerName)
-                            .font(.system(size: 7.5))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                } else if let window = headlineWindow {
+            if let session = compactCodexTaskSession {
+                switch compactSessionStyle {
+                case .stacked:
                     VStack(spacing: 1) {
-                        Text(window.windowLabel)
-                            .font(.system(size: 7.5))
-                            .foregroundStyle(.secondary)
-                        Text("\(Int(window.remainingPercent.rounded()))%")
-                            .font(.system(size: 17, weight: .bold).monospacedDigit())
-                            .foregroundStyle(rowColor(window))
-                        if let extra = secondaryHeadlineWindow {
-                            Text("\(extra.windowLabel) \(Int(extra.remainingPercent.rounded()))%")
-                                .font(.system(size: 7, weight: .medium).monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Text(shortReset(window.resetDate))
-                                .font(.system(size: 7).monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        }
+                        orbitCompactQuotaContent
+                        orbitCompactTaskLine(session, capsule: false)
                     }
-                } else if let err = store.lastError {
-                    Text(err)
-                        .font(.system(size: 7.5))
+                case .capsule:
+                    VStack(spacing: 1) {
+                        orbitCompactQuotaContent
+                        orbitCompactTaskLine(session, capsule: true)
+                    }
+                case .badge:
+                    VStack(spacing: 1) {
+                        orbitCompactQuotaContent
+                        orbitCompactTaskBadge(session)
+                    }
+                case .carousel:
+                    orbitCompactCarousel(session)
+                }
+            } else {
+                orbitCompactQuotaContent
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var orbitCompactQuotaContent: some View {
+        if store.thirdPartyApiOnly, let bal = store.apiBalance {
+            VStack(spacing: 2) {
+                Text(balanceBadgeText(bal))
+                    .font(.system(size: 16, weight: .bold).monospacedDigit())
+                    .foregroundStyle(balanceColor(bal.remaining ?? 0, total: bal.total))
+                Text(bal.providerName)
+                    .font(.system(size: 7.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        } else if let window = headlineWindow {
+            VStack(spacing: 1) {
+                Text(window.windowLabel)
+                    .font(.system(size: 7.5))
+                    .foregroundStyle(.secondary)
+                Text("\(Int(window.remainingPercent.rounded()))%")
+                    .font(.system(size: 17, weight: .bold).monospacedDigit())
+                    .foregroundStyle(rowColor(window))
+                if let extra = secondaryHeadlineWindow {
+                    Text("\(extra.windowLabel) \(Int(extra.remainingPercent.rounded()))%")
+                        .font(.system(size: 7, weight: .medium).monospacedDigit())
                         .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .frame(width: 54)
                 } else {
-                    ProgressView().controlSize(.small)
+                    Text(shortReset(window.resetDate))
+                        .font(.system(size: 7).monospacedDigit())
+                        .foregroundStyle(.secondary)
                 }
             }
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let err = store.lastError {
+            Text(err)
+                .font(.system(size: 7.5))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(width: 54)
+        } else {
+            ProgressView().controlSize(.small)
         }
+    }
+
+    private func orbitCompactTaskLine(_ session: CodexTaskSession, capsule: Bool) -> some View {
+        let tint = codexTaskTint(session)
+        return VStack(spacing: 1) {
+            HStack(spacing: 2) {
+                Image(systemName: "terminal")
+                    .font(.system(size: 6.5, weight: .semibold))
+                Text(session.taskName)
+                    .font(.system(size: 6.5, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 40)
+            }
+            HStack(spacing: 3) {
+                Text(session.status == .running ? "运行" : "结束")
+                    .font(.system(size: 6.5, weight: .semibold))
+                Text(compactCodexTaskDurationText(session))
+                    .font(.system(size: 6.5).monospacedDigit())
+            }
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, capsule ? 4 : 2)
+        .padding(.vertical, 2)
+        .background(
+            Group {
+                if capsule {
+                    Capsule().fill(tint.opacity(0.12))
+                } else {
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(tint.opacity(0.07))
+                }
+            }
+        )
+        .help("\(session.projectName) · \(session.taskName)")
+    }
+
+    private func orbitCompactTaskBadge(_ session: CodexTaskSession) -> some View {
+        let runningCount = visibleCodexTaskSessions.filter { $0.status == .running }.count
+        let endedCount = visibleCodexTaskSessions.count - runningCount
+        return HStack(spacing: 3) {
+            if runningCount > 0 {
+                HStack(spacing: 1) {
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 4, height: 4)
+                        .opacity(compactRunningIndicatorIsBright ? 1 : 0.35)
+                    Text("运\(runningCount)")
+                }
+                .foregroundStyle(Color.accentColor)
+            }
+            if endedCount > 0 {
+                HStack(spacing: 1) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 6))
+                    Text("结\(endedCount)")
+                }
+                .foregroundStyle(.secondary)
+            }
+            Text(compactCodexTaskDurationText(session))
+                .foregroundStyle(.secondary)
+        }
+        .font(.system(size: 6.5, weight: .semibold).monospacedDigit())
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .background(
+            Capsule()
+                .fill(Color(nsColor: .windowBackgroundColor).opacity(0.82))
+        )
+        .help("\(compactCodexTaskCount) 个会话 · \(session.taskName)")
+    }
+
+    private func orbitCompactCarousel(_ session: CodexTaskSession) -> some View {
+        ZStack {
+            orbitCompactQuotaContent
+                .opacity(compactCarouselShowsSession ? 0 : 1)
+
+            VStack(spacing: 2) {
+                Image(systemName: "terminal")
+                    .font(.system(size: 9, weight: .semibold))
+                Text(session.taskName)
+                    .font(.system(size: 7.5, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 54)
+                Text(session.status == .running ? "运行" : "结束")
+                    .font(.system(size: 7, weight: .semibold))
+                Text(compactCodexTaskDurationText(session))
+                    .font(.system(size: 7).monospacedDigit())
+            }
+            .foregroundStyle(codexTaskTint(session))
+            .opacity(compactCarouselShowsSession ? 1 : 0)
+        }
+        .animation(.easeInOut(duration: 0.2), value: compactCarouselShowsSession)
+        .help("\(session.projectName) · \(session.taskName)")
     }
 
     private var orbitExpandedBody: some View {
@@ -969,39 +1087,80 @@ struct QuotaView: View {
     }
 
     private var cardCollapsedBody: some View {
+        Group {
+            if let session = compactCodexTaskSession {
+                switch compactSessionStyle {
+                case .stacked:
+                    VStack(alignment: .leading, spacing: 5) {
+                        cardCollapsedMainRow()
+                        compactCodexTaskFullRow(session)
+                    }
+                case .capsule:
+                    HStack(spacing: 5) {
+                        cardCollapsedMainRow()
+                        compactCodexTaskCapsule(session)
+                    }
+                case .badge:
+                    HStack(spacing: 6) {
+                        cardCollapsedMainRow()
+                        compactCodexTaskBadge(session)
+                    }
+                case .carousel:
+                    cardCollapsedMainRow(carouselSession: session)
+                }
+            } else {
+                cardCollapsedMainRow()
+            }
+        }
+        .fixedSize()
+    }
+
+    private func cardCollapsedMainRow(carouselSession: CodexTaskSession? = nil) -> some View {
         HStack(spacing: 8) {
             trafficLights
 
-            if store.thirdPartyApiOnly, let bal = store.apiBalance {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("余额卡片")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
-                    Text("剩 \(balanceBadgeText(bal)) \(bal.unit ?? "")")
-                        .font(.system(size: 11, weight: .semibold).monospacedDigit())
-                        .foregroundStyle(balanceColor(bal.remaining ?? 0, total: bal.total))
-                }
-            } else if let first = snapshotWindows.first {
-                HStack(spacing: 6) {
-                    cardTag(window: first)
-                    if let second = snapshotWindows.dropFirst().first {
-                        cardTag(window: second)
-                    }
-                }
-            } else if let err = store.lastError {
-                Text(err)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+            if let carouselSession {
+                compactCodexTaskCarousel(
+                    quota: AnyView(cardCollapsedQuotaContent),
+                    session: carouselSession,
+                    vertical: false
+                )
             } else {
-                ProgressView().controlSize(.small)
+                cardCollapsedQuotaContent
             }
 
             Spacer(minLength: 2)
             refreshButton()
             collapseButton()
         }
-        .fixedSize()
+    }
+
+    @ViewBuilder
+    private var cardCollapsedQuotaContent: some View {
+        if store.thirdPartyApiOnly, let bal = store.apiBalance {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("余额卡片")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                Text("剩 \(balanceBadgeText(bal)) \(bal.unit ?? "")")
+                    .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(balanceColor(bal.remaining ?? 0, total: bal.total))
+            }
+        } else if let first = snapshotWindows.first {
+            HStack(spacing: 6) {
+                cardTag(window: first)
+                if let second = snapshotWindows.dropFirst().first {
+                    cardTag(window: second)
+                }
+            }
+        } else if let err = store.lastError {
+            Text(err)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        } else {
+            ProgressView().controlSize(.small)
+        }
     }
 
     private var cardExpandedBody: some View {

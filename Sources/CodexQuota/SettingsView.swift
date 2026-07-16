@@ -122,7 +122,7 @@ private struct AppearanceTab: View {
                     .pickerStyle(.segmented)
                     .disabled(!showCodexSessions)
 
-                    Text("默认使用角标。这个设置只影响经典小窗和屏幕边缘的吸附条，大窗仍会显示完整会话信息。")
+                    Text("默认使用角标。这个设置会应用到所有小窗和屏幕边缘的吸附条，大窗仍会显示完整会话信息。")
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                 }

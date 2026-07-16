@@ -7,6 +7,7 @@ struct QuotaView: View {
     @ObservedObject var panelState: FloatingPanelState
     @AppStorage("collapsed") private var collapsed = false
     @AppStorage(FloatingQuotaStyle.storageKey) private var styleRaw: String = FloatingQuotaStyle.defaultValue.rawValue
+    @AppStorage(CodexTaskDisplaySettings.showSessionsKey) private var showCodexSessions = true
     @AppStorage(UsageSourceDisplaySettings.showInactiveSourcesKey) private var showInactiveSources = false
     @AppStorage(UsageSourceDisplaySettings.showInactiveOfficialResetTimesKey) private var showInactiveOfficialResetTimes = true
     @AppStorage("dimmedOpacity") private var dimmedOpacity: Double = 0.35
@@ -15,6 +16,7 @@ struct QuotaView: View {
     @State private var dimmed = false
     @State private var dimTask: DispatchWorkItem?
     @State private var historyNow = Date()
+    @State private var sessionNow = Date()
     @State private var draggedSourceID: String?
     @State private var sourceRowFrames: [String: CGRect] = [:]
     @State private var pendingDeletionEntry: UsageSourceEntry?
@@ -61,6 +63,9 @@ struct QuotaView: View {
         }
         .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { now in
             historyNow = now
+        }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { now in
+            sessionNow = now
         }
         .alert(item: $pendingDeletionEntry) { entry in
             Alert(
@@ -306,6 +311,7 @@ struct QuotaView: View {
             }
 
             sourceHistorySection
+            codexTaskSessionSection
 
             if let snap = store.snapshot {
                 if !store.thirdPartyApiOnly {
@@ -759,6 +765,10 @@ struct QuotaView: View {
                 sourceHistorySection
                     .frame(width: 196, alignment: .leading)
             }
+            if !visibleCodexTaskSessions.isEmpty {
+                codexTaskSessionSection
+                    .frame(width: 196, alignment: .leading)
+            }
         }
     }
 
@@ -890,6 +900,7 @@ struct QuotaView: View {
             }
 
             sourceHistorySection
+            codexTaskSessionSection
 
             if store.thirdPartyApiOnly, let bal = store.apiBalance {
                 ApiBalanceRow(balance: bal)
@@ -918,6 +929,22 @@ struct QuotaView: View {
             }
         }
         .frame(width: 308, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var codexTaskSessionSection: some View {
+        let sessions = visibleCodexTaskSessions
+        if !sessions.isEmpty {
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Codex 会话")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+
+                ForEach(sessions) { session in
+                    codexTaskSessionRow(session)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -962,12 +989,113 @@ struct QuotaView: View {
         return [current] + (showInactiveSources ? store.inactiveSourceEntries : [])
     }
 
+    private var visibleCodexTaskSessions: [CodexTaskSession] {
+        guard showCodexSessions else { return [] }
+        return store.visibleCodexTaskSessions(referenceDate: sessionNow)
+    }
+
     private func canDragSourceEntry(_ entry: UsageSourceEntry) -> Bool {
         guard showInactiveSources, visibleSourceEntries.count > 1 else { return false }
         if let currentSourceID = store.currentSourceID {
             return entry.id != currentSourceID
         }
         return true
+    }
+
+    private func codexTaskSessionRow(_ session: CodexTaskSession) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "terminal")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(session.status == .running ? Color.accentColor : .secondary)
+                    .padding(.top, 1)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(session.taskName)
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+
+                    Text(session.projectName)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer(minLength: 6)
+
+                codexTaskStatusBadge(session)
+
+                Button {
+                    store.dismissCodexTaskSession(session.id)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 18, height: 18)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("关闭这条会话显示")
+            }
+
+            Text(codexTaskDurationText(session))
+                .font(.system(size: 9.5).monospacedDigit())
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(session.status == .running ? Color.accentColor.opacity(0.08) : Color.primary.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(session.status == .running ? Color.accentColor.opacity(0.22) : Color.primary.opacity(0.06), lineWidth: 1)
+        )
+    }
+
+    private func codexTaskStatusBadge(_ session: CodexTaskSession) -> some View {
+        Text(session.status.title)
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(session.status == .running ? Color.accentColor : .secondary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(
+                Capsule()
+                    .fill((session.status == .running ? Color.accentColor : Color.secondary).opacity(0.12))
+            )
+    }
+
+    private func codexTaskDurationText(_ session: CodexTaskSession) -> String {
+        let endDate = session.endedAt ?? sessionNow
+        let duration = max(0, Int(endDate.timeIntervalSince(session.startedAt)))
+        let prefix = session.status == .running ? "已运行" : "共运行"
+        return "\(prefix) \(durationText(duration, includeSeconds: session.status == .running))"
+    }
+
+    private func durationText(_ seconds: Int, includeSeconds: Bool) -> String {
+        if seconds < 60 { return "不到 1 分钟" }
+        if seconds < 3600 {
+            let minutes = seconds / 60
+            let remainSeconds = seconds % 60
+            if includeSeconds {
+                return "\(minutes) 分 \(remainSeconds) 秒"
+            }
+            return "\(minutes) 分钟"
+        }
+
+        let hours = seconds / 3600
+        let minutes = (seconds % 3600) / 60
+        if minutes == 0 {
+            if includeSeconds {
+                let remainSeconds = seconds % 60
+                return remainSeconds == 0 ? "\(hours) 小时" : "\(hours) 小时 \(remainSeconds) 秒"
+            }
+            return "\(hours) 小时"
+        }
+        return "\(hours) 小时 \(minutes) 分钟"
     }
 
     private func sourceEntryRow(_ entry: UsageSourceEntry, isCurrent: Bool, canDrag: Bool, canDelete: Bool) -> some View {

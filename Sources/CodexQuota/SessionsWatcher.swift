@@ -5,14 +5,28 @@ import CoreServices
 final class SessionsWatcher {
     private var stream: FSEventStreamRef?
     private let path: String
+    private let watchPath: String
+    private let targetFileName: String?
     private let debounceSeconds: Double
     private let onChange: () -> Void
     private var debounceWork: DispatchWorkItem?
 
     init(path: String, debounceSeconds: Double = 3.0, onChange: @escaping () -> Void) {
-        self.path = path
+        let normalizedPath = URL(fileURLWithPath: path).standardizedFileURL.path
+        self.path = normalizedPath
         self.debounceSeconds = debounceSeconds
         self.onChange = onChange
+
+        var isDirectory = ObjCBool(false)
+        if FileManager.default.fileExists(atPath: normalizedPath, isDirectory: &isDirectory),
+           isDirectory.boolValue {
+            self.watchPath = normalizedPath
+            self.targetFileName = nil
+        } else {
+            let fileURL = URL(fileURLWithPath: normalizedPath)
+            self.watchPath = fileURL.deletingLastPathComponent().path
+            self.targetFileName = fileURL.lastPathComponent
+        }
     }
 
     func start() {
@@ -22,15 +36,18 @@ final class SessionsWatcher {
             info: Unmanaged.passUnretained(self).toOpaque(),
             retain: nil, release: nil, copyDescription: nil
         )
-        let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
+        let callback: FSEventStreamCallback = { _, info, count, pathsPointer, _, _ in
             guard let info else { return }
             let watcher = Unmanaged<SessionsWatcher>.fromOpaque(info).takeUnretainedValue()
+            let changedPaths = watcher.changedPaths(from: pathsPointer, count: count)
+            guard watcher.shouldReload(for: changedPaths) else { return }
             DispatchQueue.main.async { watcher.scheduleReload() }
         }
-        let paths = [path] as CFArray
+        let paths = [watchPath] as CFArray
         let flags = UInt32(
             kFSEventStreamCreateFlagFileEvents |
-            kFSEventStreamCreateFlagNoDefer
+            kFSEventStreamCreateFlagNoDefer |
+            kFSEventStreamCreateFlagUseCFTypes
         )
         guard let stream = FSEventStreamCreate(
             kCFAllocatorDefault, callback, &context, paths,
@@ -49,6 +66,20 @@ final class SessionsWatcher {
         let work = DispatchWorkItem { [weak self] in self?.onChange() }
         debounceWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + debounceSeconds, execute: work)
+    }
+
+    private func changedPaths(from rawPaths: UnsafeMutableRawPointer?, count: Int) -> [String] {
+        guard let rawPaths else { return [] }
+        let array = unsafeBitCast(rawPaths, to: NSArray.self)
+        return array
+            .compactMap { $0 as? String }
+            .prefix(count)
+            .map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+    }
+
+    private func shouldReload(for changedPaths: [String]) -> Bool {
+        guard let targetFileName else { return true }
+        return changedPaths.contains { URL(fileURLWithPath: $0).lastPathComponent == targetFileName }
     }
 
     func stop() {

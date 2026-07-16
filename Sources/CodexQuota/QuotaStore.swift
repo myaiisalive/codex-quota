@@ -13,11 +13,14 @@ final class QuotaStore: ObservableObject {
     @Published private(set) var currentSourceID: String?
     @Published private(set) var sourceSortMode: UsageSourceSortMode = UsageSourceOrderStore.loadMode()
     @Published private(set) var customSourceOrderIDs: [String] = UsageSourceOrderStore.loadCustomOrderIDs()
+    @Published private(set) var codexTaskSessions: [CodexTaskSession] = []
     /// 第三方 API 模式：当前激活的是非官方 provider
     /// 此时只显示 API 余额，不显示 5 小时/周
     @Published private(set) var thirdPartyApiOnly: Bool = false
+    @Published private var dismissedCodexTaskSessionIDs: Set<String> = []
 
     private var watcher: SessionsWatcher?
+    private var sessionIndexWatcher: SessionsWatcher?
     private var authWatcher: SessionsWatcher?
     private var timer: Timer?
     private var balanceTimer: Timer?
@@ -76,6 +79,12 @@ final class QuotaStore: ObservableObject {
             onChange: { [weak self] in self?.reload() }
         )
         watcher?.start()
+        sessionIndexWatcher = SessionsWatcher(
+            path: CodexTaskSessionReader.sessionIndexWatchPath,
+            debounceSeconds: 0.4,
+            onChange: { [weak self] in self?.reloadCodexTaskSessions() }
+        )
+        sessionIndexWatcher?.start()
         authWatcher = SessionsWatcher(
             path: CodexAccountProfileReader.watchRootPath,
             debounceSeconds: 0.4,
@@ -91,7 +100,10 @@ final class QuotaStore: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.rebuildTimerIfNeeded() }
+            Task { @MainActor in
+                self?.rebuildTimerIfNeeded()
+                self?.reloadCodexTaskSessions()
+            }
         }
     }
 
@@ -191,6 +203,7 @@ final class QuotaStore: ObservableObject {
     }
 
     func reload() {
+        reloadCodexTaskSessions()
         Task {
             let result = await Task.detached(priority: .utility) { () -> OfficialReloadResult in
                 let profile = CodexAccountProfileReader.loadCurrent()
@@ -257,6 +270,17 @@ final class QuotaStore: ObservableObject {
         }
     }
 
+    func dismissCodexTaskSession(_ id: String) {
+        dismissedCodexTaskSessionIDs.insert(id)
+    }
+
+    func visibleCodexTaskSessions(referenceDate: Date = Date()) -> [CodexTaskSession] {
+        codexTaskSessions.filter { session in
+            session.shouldDisplay(referenceDate: referenceDate) &&
+            !dismissedCodexTaskSessionIDs.contains(session.id)
+        }
+    }
+
     private func recordOfficialSource(profile: CodexAccountProfile?, snapshot: QuotaSnapshot?) {
         guard let profile,
               let entry = UsageSourceEntry.official(profile: profile, snapshot: snapshot) else {
@@ -312,6 +336,24 @@ final class QuotaStore: ObservableObject {
     private func officialSourceID(for profile: CodexAccountProfile?) -> String? {
         guard let profile else { return nil }
         return UsageSourceEntry.official(profile: profile, snapshot: nil)?.id
+    }
+
+    private func reloadCodexTaskSessions() {
+        guard CodexTaskDisplaySettings.isEnabled() else {
+            codexTaskSessions = []
+            dismissedCodexTaskSessionIDs = []
+            return
+        }
+
+        Task {
+            let sessions = await Task.detached(priority: .utility) {
+                CodexTaskSessionReader.loadRecentTasks()
+            }.value
+
+            self.codexTaskSessions = sessions
+            let visibleIDs = Set(sessions.map(\.id))
+            self.dismissedCodexTaskSessionIDs = self.dismissedCodexTaskSessionIDs.intersection(visibleIDs)
+        }
     }
 
     private func upsertSource(_ incoming: UsageSourceEntry) {

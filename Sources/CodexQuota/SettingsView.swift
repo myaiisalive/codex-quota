@@ -61,6 +61,7 @@ private struct AppearanceTab: View {
     @ObservedObject var store: QuotaStore
     @AppStorage(FloatingQuotaStyle.storageKey) private var panelStyleRaw: String = FloatingQuotaStyle.defaultValue.rawValue
     @AppStorage(FloatingPanelState.edgeSnapEnabledKey) private var edgeSnapEnabled = false
+    @AppStorage(CodexTaskDisplaySettings.showSessionsKey) private var showCodexSessions = true
     @AppStorage(UsageSourceDisplaySettings.showInactiveSourcesKey) private var showInactiveSources = false
     @AppStorage(UsageSourceDisplaySettings.showInactiveOfficialResetTimesKey) private var showInactiveOfficialResetTimes = true
     @AppStorage("dimmedOpacity") private var dimmedOpacity: Double = 0.35
@@ -102,6 +103,13 @@ private struct AppearanceTab: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Toggle("显示其他未启用的账号和 API", isOn: $showInactiveSources)
                     Text("打开后，浮窗里会把以前用过但当前没有启用的账号和 API 也一起列出来；关闭后只显示当前启用的那一条。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("显示 Codex 会话", isOn: $showCodexSessions)
+                    Text("默认开启。打开后，大浮窗里会显示最近正在进行和刚结束不久的 Codex 会话，也可以手动关闭某一条。")
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                 }

@@ -114,15 +114,19 @@ private struct AppearanceTab: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
 
-                    Picker("小窗和吸附条中的显示方式", selection: $compactSessionStyleRaw) {
-                        ForEach(CodexTaskCompactDisplayStyle.allCases) { style in
-                            Text(style.title).tag(style.rawValue)
-                        }
-                    }
-                    .pickerStyle(.segmented)
+                    Text("原有样式")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    sessionStyleSelector(CodexTaskCompactDisplayStyle.legacyCases)
                     .disabled(!showCodexSessions)
 
-                    Text("默认使用角标。这个设置会应用到所有小窗和屏幕边缘的吸附条，大窗仍会显示完整会话信息。")
+                    Text("完整会话样式")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    sessionStyleSelector(CodexTaskCompactDisplayStyle.fullListCases)
+                    .disabled(!showCodexSessions)
+
+                    Text("\(CodexTaskCompactDisplayStyle(rawValue: compactSessionStyleRaw)?.detail ?? CodexTaskCompactDisplayStyle.defaultValue.detail)默认使用角标；下排四种样式会显示全部会话、状态和运行时间。")
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                 }
@@ -155,6 +159,37 @@ private struct AppearanceTab: View {
             }
             .padding(20)
         }
+    }
+
+    private func sessionStyleSelector(
+        _ styles: [CodexTaskCompactDisplayStyle]
+    ) -> some View {
+        HStack(spacing: 2) {
+            ForEach(styles) { style in
+                let selected = compactSessionStyleRaw == style.rawValue
+                Button {
+                    compactSessionStyleRaw = style.rawValue
+                } label: {
+                    Text(style.title)
+                        .font(.system(size: 11, weight: selected ? .semibold : .regular))
+                        .foregroundStyle(selected ? Color.white : Color.primary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 5)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .fill(selected ? Color.accentColor : Color.clear)
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(style.title)
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+        }
+        .padding(2)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.primary.opacity(0.07))
+        )
     }
 }
 

@@ -51,13 +51,20 @@ enum CodexTaskDisplaySettings {
 }
 
 enum CodexTaskCompactDisplayStyle: String, CaseIterable, Identifiable {
+    // 前四个存储值已经上线，不能改名或复用为其他样式。
     case stacked
     case capsule
     case badge
     case carousel
+    case layered
+    case taskRail
+    case statusCards
+    case timeline
 
     static let storageKey = "codexTaskCompactDisplayStyle"
     static let defaultValue: CodexTaskCompactDisplayStyle = .badge
+    static let legacyCases: [CodexTaskCompactDisplayStyle] = [.stacked, .capsule, .badge, .carousel]
+    static let fullListCases: [CodexTaskCompactDisplayStyle] = [.layered, .taskRail, .statusCards, .timeline]
 
     var id: String { rawValue }
 
@@ -67,7 +74,28 @@ enum CodexTaskCompactDisplayStyle: String, CaseIterable, Identifiable {
         case .capsule: return "胶囊"
         case .badge: return "角标"
         case .carousel: return "轮播"
+        case .layered: return "分层"
+        case .taskRail: return "任务轨"
+        case .statusCards: return "状态卡"
+        case .timeline: return "时间线"
         }
+    }
+
+    var detail: String {
+        switch self {
+        case .stacked: return "额度和当前会话分成两行显示。"
+        case .capsule: return "当前会话显示为紧凑胶囊。"
+        case .badge: return "只显示运行和结束数量，最节省空间。"
+        case .carousel: return "额度与当前会话定时切换显示。"
+        case .layered: return "逐行显示全部会话，信息最清楚。"
+        case .taskRail: return "按运行状态分组显示全部会话。"
+        case .statusCards: return "全部会话使用独立色块，状态最醒目。"
+        case .timeline: return "用状态点和连线显示全部会话。"
+        }
+    }
+
+    var showsAllSessions: Bool {
+        Self.fullListCases.contains(self)
     }
 }
 

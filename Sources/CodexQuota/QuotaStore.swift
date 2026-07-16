@@ -29,6 +29,9 @@ final class QuotaStore: ObservableObject {
     private var currentThirdPartySourceID: String?
     private var inactiveThirdPartyRefreshTask: Task<Void, Never>?
     private var displayedOfficialSnapshotSourceID: String?
+    private var codexTaskReloadTask: Task<Void, Never>?
+    private var codexTaskReloadPending = false
+    private var codexTaskDisplayEnabled = CodexTaskDisplaySettings.isEnabled()
 
     private static let lastConfirmedOfficialSourceKey = "lastConfirmedOfficialSourceID"
 
@@ -101,8 +104,14 @@ final class QuotaStore: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.rebuildTimerIfNeeded()
-                self?.reloadCodexTaskSessions()
+                guard let self else { return }
+                self.rebuildTimerIfNeeded()
+
+                let isEnabled = CodexTaskDisplaySettings.isEnabled()
+                if isEnabled != self.codexTaskDisplayEnabled {
+                    self.codexTaskDisplayEnabled = isEnabled
+                    self.reloadCodexTaskSessions()
+                }
             }
         }
     }
@@ -339,20 +348,45 @@ final class QuotaStore: ObservableObject {
     }
 
     private func reloadCodexTaskSessions() {
-        guard CodexTaskDisplaySettings.isEnabled() else {
+        codexTaskDisplayEnabled = CodexTaskDisplaySettings.isEnabled()
+        guard codexTaskDisplayEnabled else {
+            codexTaskReloadPending = false
             codexTaskSessions = []
             dismissedCodexTaskSessionIDs = []
             return
         }
 
-        Task {
-            let sessions = await Task.detached(priority: .utility) {
-                CodexTaskSessionReader.loadRecentTasks()
-            }.value
+        // 文件监听、定时刷新可能同时到达；扫描期间只合并一次后续刷新。
+        guard codexTaskReloadTask == nil else {
+            codexTaskReloadPending = true
+            return
+        }
+
+        let worker = Task.detached(priority: .utility) {
+            CodexTaskSessionReader.loadRecentTasks()
+        }
+        codexTaskReloadTask = Task { [weak self] in
+            let sessions = await worker.value
+            guard let self else { return }
+            self.codexTaskReloadTask = nil
+
+            guard self.codexTaskDisplayEnabled,
+                  CodexTaskDisplaySettings.isEnabled() else {
+                self.codexTaskReloadPending = false
+                self.codexTaskSessions = []
+                self.dismissedCodexTaskSessionIDs = []
+                return
+            }
 
             self.codexTaskSessions = sessions
             let visibleIDs = Set(sessions.map(\.id))
             self.dismissedCodexTaskSessionIDs = self.dismissedCodexTaskSessionIDs.intersection(visibleIDs)
+
+            let needsReload = self.codexTaskReloadPending
+            self.codexTaskReloadPending = false
+            if needsReload {
+                self.reloadCodexTaskSessions()
+            }
         }
     }
 

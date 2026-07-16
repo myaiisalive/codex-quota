@@ -100,13 +100,18 @@ enum CodexTaskCompactDisplayStyle: String, CaseIterable, Identifiable {
 }
 
 enum CodexTaskSessionReader {
+    private static let maximumTailReadSize = 8 * 1024 * 1024
+    private static let maximumHeadReadSize = 64 * 1024
+    private static let sessionIndexReadSize = 2 * 1024 * 1024
     private static let tailReadSizes: [Int] = [
         128 * 1024,
         512 * 1024,
         2 * 1024 * 1024,
-        8 * 1024 * 1024
+        maximumTailReadSize
     ]
-    private static let headReadSize = 64 * 1024
+    private static let cacheLock = NSLock()
+    private static var sessionFileCache: [String: CachedSessionFile] = [:]
+    private static var threadNameCache: CachedThreadNames?
 
     private static let codexRoot: URL = {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -132,21 +137,21 @@ enum CodexTaskSessionReader {
     }()
 
     static func loadRecentTasks(limit: Int = 24) -> [CodexTaskSession] {
+        // 除了上层合并刷新，这里也强制串行，防止未来其他调用方并发扫描日志。
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+
         let threadNames = loadThreadNames()
         let files = QuotaReader.findSessionFiles(limit: limit)
+        let recentPaths = Set(files.map(\.path))
+        sessionFileCache = sessionFileCache.filter { recentPaths.contains($0.key) }
 
         var newestByThreadID: [String: CodexTaskSession] = [:]
         for file in files {
-            let sessionHeader = loadSessionHeader(from: file)
-            guard let threadID = sessionHeader?.sessionID ?? threadID(from: file),
-                  let task = extractLatestTask(
-                    from: file,
-                    threadID: threadID,
-                    preferredTitle: threadNames[threadID],
-                    initialCwd: sessionHeader?.cwd
-                  ) else {
+            guard let task = extractLatestTask(from: file, threadNames: threadNames) else {
                 continue
             }
+            let threadID = task.threadID
 
             if let existing = newestByThreadID[threadID] {
                 if task.sortDate > existing.sortDate {
@@ -167,16 +172,23 @@ enum CodexTaskSessionReader {
 
     private static func extractLatestTask(
         from url: URL,
-        threadID: String,
-        preferredTitle: String?,
-        initialCwd: String?
+        threadNames: [String: String]
     ) -> CodexTaskSession? {
-        guard let fileSize = fileSize(of: url) else { return nil }
+        guard let fingerprint = fileFingerprint(of: url) else { return nil }
+        let cacheKey = url.path
+
+        if let cached = sessionFileCache[cacheKey],
+           cached.fingerprint == fingerprint {
+            return makeTask(from: cached, preferredTitle: threadNames[cached.threadID])
+        }
+
+        let sessionHeader = loadSessionHeader(from: url)
+        guard let threadID = sessionHeader?.sessionID ?? threadID(from: url) else { return nil }
 
         var latestScan: TailScanResult?
         for maxBytes in tailReadSizes {
-            let bytesToRead = min(maxBytes, fileSize)
-            let isPartialRead = bytesToRead < fileSize
+            let bytesToRead = min(maxBytes, fingerprint.fileSize)
+            let isPartialRead = bytesToRead < fingerprint.fileSize
             guard let text = readTailText(from: url, bytesToRead: bytesToRead),
                   let scan = scanLatestTask(from: text, dropFirstLine: isPartialRead) else {
                 continue
@@ -188,28 +200,52 @@ enum CodexTaskSessionReader {
             }
         }
 
-        // 超长会话里，task_started 可能已经被后续的大量工具输出“挤”到尾部 8MB 之外。
-        // 这种情况只对当前文件做一次整文件兜底，避免长时间运行的会话直接消失。
-        if latestScan == nil {
-            latestScan = scanLatestTaskInWholeFile(from: url)
+        // 文件继续增长但任务标记已离开尾部窗口时，沿用本次进程之前的有界扫描结果。
+        if latestScan == nil,
+           let cached = sessionFileCache[cacheKey],
+           cached.threadID == threadID,
+           fingerprint.fileSize > cached.fingerprint.fileSize {
+            latestScan = cached.scan
         }
 
-        guard var latestScan else { return nil }
+        guard var latestScan else {
+            sessionFileCache[cacheKey] = CachedSessionFile(
+                fingerprint: fingerprint,
+                threadID: threadID,
+                scan: nil
+            )
+            return nil
+        }
         if latestScan.cwd == nil {
-            latestScan.cwd = initialCwd
+            latestScan.cwd = sessionHeader?.cwd
         }
 
+        let preferredTitle = threadNames[threadID]
         if latestScan.cwd == nil || (preferredTitle == nil && latestScan.fallbackTitle == nil) {
             enrichFromHead(of: url, scan: &latestScan)
         }
 
+        let cached = CachedSessionFile(
+            fingerprint: fingerprint,
+            threadID: threadID,
+            scan: latestScan
+        )
+        sessionFileCache[cacheKey] = cached
+        return makeTask(from: cached, preferredTitle: preferredTitle)
+    }
+
+    private static func makeTask(
+        from cached: CachedSessionFile,
+        preferredTitle: String?
+    ) -> CodexTaskSession? {
+        guard let latestScan = cached.scan else { return nil }
         let title = preferredTitle ?? latestScan.fallbackTitle ?? "未命名会话"
         let projectName = projectName(from: latestScan.cwd)
-        let taskID = "\(threadID):\(latestScan.task.turnID)"
+        let taskID = "\(cached.threadID):\(latestScan.task.turnID)"
 
         return CodexTaskSession(
             id: taskID,
-            threadID: threadID,
+            threadID: cached.threadID,
             turnID: latestScan.task.turnID,
             projectName: projectName,
             taskName: title,
@@ -257,40 +293,8 @@ enum CodexTaskSessionReader {
         return TailScanResult(task: latestTaskInfo, cwd: cwd, fallbackTitle: nil)
     }
 
-    private static func scanLatestTaskInWholeFile(from url: URL) -> TailScanResult? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        let text = String(decoding: data, as: UTF8.self)
-
-        var latestTaskInfo: LatestTask?
-        var cwdByTurnID: [String: String] = [:]
-
-        for line in text.split(omittingEmptySubsequences: true, whereSeparator: \.isNewline) {
-            guard let data = line.data(using: .utf8),
-                  let envelope = try? JSONDecoder().decode(SessionEnvelope.self, from: data) else {
-                continue
-            }
-
-            if envelope.type == "turn_context",
-               let turnID = trimmed(envelope.payload?.turnID),
-               let lineCwd = trimmed(envelope.payload?.cwd) {
-                cwdByTurnID[turnID] = lineCwd
-            }
-
-            if let task = latestTask(from: envelope) {
-                latestTaskInfo = task
-            }
-        }
-
-        guard let latestTaskInfo else { return nil }
-        return TailScanResult(
-            task: latestTaskInfo,
-            cwd: cwdByTurnID[latestTaskInfo.turnID],
-            fallbackTitle: nil
-        )
-    }
-
     private static func enrichFromHead(of url: URL, scan: inout TailScanResult) {
-        guard let text = readHeadText(from: url, bytesToRead: headReadSize) else { return }
+        guard let text = readHeadText(from: url, bytesToRead: maximumHeadReadSize) else { return }
 
         for line in text.split(omittingEmptySubsequences: true, whereSeparator: \.isNewline) {
             guard let data = line.data(using: .utf8),
@@ -376,10 +380,25 @@ enum CodexTaskSessionReader {
     }
 
     private static func loadThreadNames() -> [String: String] {
-        guard let text = try? String(contentsOf: sessionIndexURL, encoding: .utf8) else { return [:] }
+        guard let fingerprint = fileFingerprint(of: sessionIndexURL) else {
+            threadNameCache = nil
+            return [:]
+        }
+        if let cached = threadNameCache,
+           cached.fingerprint == fingerprint {
+            return cached.names
+        }
+
+        let bytesToRead = min(sessionIndexReadSize, fingerprint.fileSize)
+        let isPartialRead = bytesToRead < fingerprint.fileSize
+        guard let text = readTailText(from: sessionIndexURL, bytesToRead: bytesToRead) else {
+            return [:]
+        }
+        let lines = text.split(omittingEmptySubsequences: true, whereSeparator: \.isNewline)
+        let iterable = isPartialRead ? lines.dropFirst() : ArraySlice(lines)
 
         var names: [String: IndexedThreadName] = [:]
-        for line in text.split(omittingEmptySubsequences: true, whereSeparator: \.isNewline) {
+        for line in iterable {
             guard let data = line.data(using: .utf8),
                   let record = try? JSONDecoder().decode(SessionIndexRecord.self, from: data),
                   let title = trimmed(record.threadName) else {
@@ -396,11 +415,13 @@ enum CodexTaskSessionReader {
             }
         }
 
-        return names.mapValues(\.title)
+        let result = names.mapValues(\.title)
+        threadNameCache = CachedThreadNames(fingerprint: fingerprint, names: result)
+        return result
     }
 
     private static func loadSessionHeader(from url: URL) -> SessionHeader? {
-        guard let text = readHeadText(from: url, bytesToRead: headReadSize),
+        guard let text = readHeadText(from: url, bytesToRead: maximumHeadReadSize),
               let firstLine = text.split(omittingEmptySubsequences: true, whereSeparator: \.isNewline).first,
               let data = firstLine.data(using: .utf8),
               let envelope = try? JSONDecoder().decode(SessionEnvelope.self, from: data),
@@ -481,7 +502,9 @@ enum CodexTaskSessionReader {
 
         guard let fileSize = try? handle.seekToEnd(),
               fileSize > 0 else { return nil }
-        let readCount = min(UInt64(bytesToRead), fileSize)
+        // 双重限制读取量，调用方即使传错参数也不能把整个超大会话载入内存。
+        let boundedBytes = min(bytesToRead, maximumTailReadSize)
+        let readCount = min(UInt64(boundedBytes), fileSize)
         let offset = fileSize - readCount
         try? handle.seek(toOffset: offset)
         let data = handle.readData(ofLength: Int(readCount))
@@ -493,15 +516,25 @@ enum CodexTaskSessionReader {
               let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
 
-        let data = handle.readData(ofLength: bytesToRead)
+        let data = handle.readData(ofLength: min(bytesToRead, maximumHeadReadSize))
         return String(decoding: data, as: UTF8.self)
     }
 
-    private static func fileSize(of url: URL) -> Int? {
-        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
+#if DEBUG
+    static func readTailTextForTesting(from url: URL, bytesToRead: Int) -> String? {
+        readTailText(from: url, bytesToRead: bytesToRead)
+    }
+
+    static func readHeadTextForTesting(from url: URL, bytesToRead: Int) -> String? {
+        readHeadText(from: url, bytesToRead: bytesToRead)
+    }
+#endif
+
+    private static func fileFingerprint(of url: URL) -> FileFingerprint? {
+        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
               let size = values.fileSize,
               size > 0 else { return nil }
-        return size
+        return FileFingerprint(fileSize: size, modificationDate: values.contentModificationDate)
     }
 
     private static func trimmed(_ value: String?) -> String? {
@@ -512,6 +545,22 @@ enum CodexTaskSessionReader {
 }
 
 private extension CodexTaskSessionReader {
+    struct FileFingerprint: Equatable {
+        let fileSize: Int
+        let modificationDate: Date?
+    }
+
+    struct CachedSessionFile {
+        let fingerprint: FileFingerprint
+        let threadID: String
+        let scan: TailScanResult?
+    }
+
+    struct CachedThreadNames {
+        let fingerprint: FileFingerprint
+        let names: [String: String]
+    }
+
     struct TailScanResult {
         let task: LatestTask
         var cwd: String?

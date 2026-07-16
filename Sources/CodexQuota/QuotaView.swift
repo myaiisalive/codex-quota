@@ -8,6 +8,7 @@ struct QuotaView: View {
     @AppStorage("collapsed") private var collapsed = false
     @AppStorage(FloatingQuotaStyle.storageKey) private var styleRaw: String = FloatingQuotaStyle.defaultValue.rawValue
     @AppStorage(CodexTaskDisplaySettings.showSessionsKey) private var showCodexSessions = true
+    @AppStorage(CodexTaskCompactDisplayStyle.storageKey) private var compactSessionStyleRaw = CodexTaskCompactDisplayStyle.defaultValue.rawValue
     @AppStorage(UsageSourceDisplaySettings.showInactiveSourcesKey) private var showInactiveSources = false
     @AppStorage(UsageSourceDisplaySettings.showInactiveOfficialResetTimesKey) private var showInactiveOfficialResetTimes = true
     @AppStorage("dimmedOpacity") private var dimmedOpacity: Double = 0.35
@@ -29,6 +30,10 @@ struct QuotaView: View {
 
     private var panelStyle: FloatingQuotaStyle {
         FloatingQuotaStyle(rawValue: styleRaw) ?? .classic
+    }
+
+    private var compactSessionStyle: CodexTaskCompactDisplayStyle {
+        CodexTaskCompactDisplayStyle(rawValue: compactSessionStyleRaw) ?? .badge
     }
 
     var body: some View {
@@ -198,24 +203,43 @@ struct QuotaView: View {
     }
 
     private var horizontalEdgeBar: some View {
-        HStack(spacing: 7) {
-            if let current = store.currentSourceEntry {
-                edgeBarActiveSourceChip(current)
-            }
-            if store.thirdPartyApiOnly {
-                edgeBarApiHorizontal
+        Group {
+            if let session = compactCodexTaskSession {
+                switch compactSessionStyle {
+                case .stacked:
+                    VStack(spacing: 3) {
+                        horizontalEdgeQuotaContent
+                        compactCodexTaskFullRow(session)
+                    }
+                case .capsule:
+                    HStack(spacing: 5) {
+                        horizontalEdgeQuotaContent
+                        compactCodexTaskCapsule(session)
+                    }
+                case .badge:
+                    HStack(spacing: 6) {
+                        horizontalEdgeQuotaContent
+                        compactCodexTaskBadge(session)
+                    }
+                case .carousel:
+                    compactCodexTaskCarousel(
+                        quota: AnyView(horizontalEdgeQuotaContent),
+                        session: session,
+                        vertical: false
+                    )
+                }
             } else {
-                edgeBarQuotaHorizontal
+                horizontalEdgeQuotaContent
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
         .background(
-            Capsule()
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color(nsColor: .windowBackgroundColor).opacity(0.96))
         )
         .overlay(
-            Capsule()
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.05), radius: 4, y: 1)
@@ -223,14 +247,33 @@ struct QuotaView: View {
     }
 
     private var verticalEdgeBar: some View {
-        VStack(spacing: 6) {
-            if let current = store.currentSourceEntry {
-                edgeBarActiveSourceVertical(current)
-            }
-            if store.thirdPartyApiOnly {
-                edgeBarApiVertical
+        Group {
+            if let session = compactCodexTaskSession {
+                switch compactSessionStyle {
+                case .stacked:
+                    VStack(spacing: 5) {
+                        verticalEdgeQuotaContent
+                        compactCodexTaskVertical(session, capsule: false)
+                    }
+                case .capsule:
+                    VStack(spacing: 5) {
+                        verticalEdgeQuotaContent
+                        compactCodexTaskVertical(session, capsule: true)
+                    }
+                case .badge:
+                    VStack(spacing: 5) {
+                        verticalEdgeQuotaContent
+                        compactCodexTaskVerticalBadge(session)
+                    }
+                case .carousel:
+                    compactCodexTaskCarousel(
+                        quota: AnyView(verticalEdgeQuotaContent),
+                        session: session,
+                        vertical: true
+                    )
+                }
             } else {
-                edgeBarQuotaVertical
+                verticalEdgeQuotaContent
             }
         }
         .padding(.horizontal, 4)
@@ -347,41 +390,97 @@ struct QuotaView: View {
     // MARK: - Collapsed (single line)
 
     private var collapsedBody: some View {
+        Group {
+            if panelStyle == .classic, let session = compactCodexTaskSession {
+                switch compactSessionStyle {
+                case .stacked:
+                    VStack(alignment: .leading, spacing: 4) {
+                        collapsedMainRow()
+                        compactCodexTaskFullRow(session)
+                    }
+                case .capsule:
+                    HStack(spacing: 5) {
+                        collapsedMainRow()
+                        compactCodexTaskCapsule(session)
+                    }
+                case .badge:
+                    collapsedMainRow(badgeSession: session)
+                case .carousel:
+                    collapsedMainRow(carouselSession: session)
+                }
+            } else {
+                collapsedMainRow()
+            }
+        }
+        .fixedSize()
+    }
+
+    private func collapsedMainRow(
+        badgeSession: CodexTaskSession? = nil,
+        carouselSession: CodexTaskSession? = nil
+    ) -> some View {
         HStack(spacing: 8) {
             trafficLights
-            Image(systemName: store.thirdPartyApiOnly ? "creditcard" : "gauge.with.needle")
+
+            if let carouselSession {
+                ZStack {
+                    Image(systemName: store.thirdPartyApiOnly ? "creditcard" : "gauge.with.needle")
+                        .opacity(compactCarouselShowsSession ? 0 : 1)
+                    Image(systemName: "terminal")
+                        .foregroundStyle(Color.accentColor)
+                        .opacity(compactCarouselShowsSession ? 1 : 0)
+                }
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
 
-            if store.thirdPartyApiOnly, let bal = store.apiBalance {
-                collapsedBalance(bal)
-            } else if let snap = store.snapshot {
-                let ws = windows(snap)
-                HStack(spacing: 8) {
-                    ForEach(Array(ws.enumerated()), id: \.offset) { idx, w in
-                        HStack(spacing: 3) {
-                            Text(w.windowLabel)
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                            Text("\(Int(w.remainingPercent.rounded()))%")
-                                .font(.system(size: 11, weight: .semibold).monospacedDigit())
-                                .foregroundStyle(rowColor(w))
-                        }
-                        if idx < ws.count - 1 {
-                            Text("·")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                }
+                compactCodexTaskCarousel(
+                    quota: AnyView(collapsedQuotaContent),
+                    session: carouselSession,
+                    vertical: false,
+                    includesIcon: false
+                )
             } else {
-                Text("--").font(.system(size: 11)).foregroundStyle(.secondary)
+                Image(systemName: store.thirdPartyApiOnly ? "creditcard" : "gauge.with.needle")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                collapsedQuotaContent
+            }
+
+            if let badgeSession {
+                compactCodexTaskBadge(badgeSession)
             }
 
             refreshButton()
             collapseButton()
         }
-        .fixedSize()
+    }
+
+    @ViewBuilder
+    private var collapsedQuotaContent: some View {
+        if store.thirdPartyApiOnly, let bal = store.apiBalance {
+            collapsedBalance(bal)
+        } else if let snap = store.snapshot {
+            let ws = windows(snap)
+            HStack(spacing: 8) {
+                ForEach(Array(ws.enumerated()), id: \.offset) { idx, w in
+                    HStack(spacing: 3) {
+                        Text(w.windowLabel)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        Text("\(Int(w.remainingPercent.rounded()))%")
+                            .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(rowColor(w))
+                    }
+                    if idx < ws.count - 1 {
+                        Text("·")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        } else {
+            Text("--").font(.system(size: 11)).foregroundStyle(.secondary)
+        }
     }
 
     private func collapsedBalance(_ bal: UsageScriptRunner.Balance) -> some View {
@@ -531,6 +630,32 @@ struct QuotaView: View {
         )
         .shadow(color: .black.opacity(0.05), radius: 4, y: 1)
         .fixedSize()
+    }
+
+    private var horizontalEdgeQuotaContent: some View {
+        HStack(spacing: 7) {
+            if let current = store.currentSourceEntry {
+                edgeBarActiveSourceChip(current)
+            }
+            if store.thirdPartyApiOnly {
+                edgeBarApiHorizontal
+            } else {
+                edgeBarQuotaHorizontal
+            }
+        }
+    }
+
+    private var verticalEdgeQuotaContent: some View {
+        VStack(spacing: 6) {
+            if let current = store.currentSourceEntry {
+                edgeBarActiveSourceVertical(current)
+            }
+            if store.thirdPartyApiOnly {
+                edgeBarApiVertical
+            } else {
+                edgeBarQuotaVertical
+            }
+        }
     }
 
     private var edgeBarQuotaHorizontal: some View {
@@ -992,6 +1117,191 @@ struct QuotaView: View {
     private var visibleCodexTaskSessions: [CodexTaskSession] {
         guard showCodexSessions else { return [] }
         return store.visibleCodexTaskSessions(referenceDate: sessionNow)
+    }
+
+    private var compactCodexTaskSession: CodexTaskSession? {
+        visibleCodexTaskSessions.first
+    }
+
+    private var compactCodexTaskCount: Int {
+        visibleCodexTaskSessions.count
+    }
+
+    private var compactCarouselShowsSession: Bool {
+        Int(sessionNow.timeIntervalSinceReferenceDate / 4).isMultiple(of: 2) == false
+    }
+
+    private func compactCodexTaskFullRow(_ session: CodexTaskSession) -> some View {
+        let tint = codexTaskTint(session)
+        return HStack(spacing: 5) {
+            Image(systemName: "terminal")
+                .font(.system(size: 9, weight: .semibold))
+            Text(session.taskName)
+                .font(.system(size: 9.5, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: 96, alignment: .leading)
+            Text(session.status.title)
+                .font(.system(size: 8.5, weight: .semibold))
+            Text(compactCodexTaskDurationText(session))
+                .font(.system(size: 8.5).monospacedDigit())
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(tint.opacity(0.10))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(tint.opacity(0.18), lineWidth: 1)
+        )
+        .help("\(session.projectName) · \(session.taskName)")
+    }
+
+    private func compactCodexTaskCapsule(_ session: CodexTaskSession) -> some View {
+        let tint = codexTaskTint(session)
+        return HStack(spacing: 4) {
+            Image(systemName: "terminal")
+                .font(.system(size: 8.5, weight: .semibold))
+            Text(session.taskName)
+                .font(.system(size: 9, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: 62)
+            Text(compactCodexTaskDurationText(session))
+                .font(.system(size: 8.5).monospacedDigit())
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .background(Capsule().fill(tint.opacity(0.12)))
+        .overlay(Capsule().stroke(tint.opacity(0.22), lineWidth: 1))
+        .help("\(session.projectName) · \(session.taskName)")
+    }
+
+    private func compactCodexTaskBadge(_ session: CodexTaskSession) -> some View {
+        let tint = codexTaskTint(session)
+        return HStack(spacing: 4) {
+            HStack(spacing: 2) {
+                Image(systemName: "terminal")
+                    .font(.system(size: 7.5, weight: .bold))
+                Text("\(compactCodexTaskCount)")
+                    .font(.system(size: 8, weight: .bold).monospacedDigit())
+            }
+            .foregroundStyle(tint)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 3)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(tint.opacity(0.14))
+            )
+
+            Text(compactCodexTaskDurationText(session))
+                .font(.system(size: 8.5).monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .fixedSize()
+        .help("\(compactCodexTaskCount) 个会话 · \(session.taskName)")
+    }
+
+    private func compactCodexTaskVertical(_ session: CodexTaskSession, capsule: Bool) -> some View {
+        let tint = codexTaskTint(session)
+        return VStack(spacing: 2) {
+            Image(systemName: "terminal")
+                .font(.system(size: 9, weight: .semibold))
+            Text(compactCodexTaskDurationText(session))
+                .font(.system(size: 7.5, weight: .medium).monospacedDigit())
+                .lineLimit(1)
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, capsule ? 5 : 0)
+        .padding(.vertical, capsule ? 4 : 0)
+        .background(
+            Group {
+                if capsule {
+                    Capsule().fill(tint.opacity(0.12))
+                }
+            }
+        )
+        .help("\(session.projectName) · \(session.taskName)")
+    }
+
+    private func compactCodexTaskVerticalBadge(_ session: CodexTaskSession) -> some View {
+        let tint = codexTaskTint(session)
+        return VStack(spacing: 2) {
+            HStack(spacing: 2) {
+                Image(systemName: "terminal")
+                    .font(.system(size: 7.5, weight: .bold))
+                Text("\(compactCodexTaskCount)")
+                    .font(.system(size: 7.5, weight: .bold).monospacedDigit())
+            }
+            .foregroundStyle(tint)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 3)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(tint.opacity(0.14))
+            )
+            Text(compactCodexTaskDurationText(session))
+                .font(.system(size: 7).monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .help("\(compactCodexTaskCount) 个会话 · \(session.taskName)")
+    }
+
+    private func compactCodexTaskCarousel(
+        quota: AnyView,
+        session: CodexTaskSession,
+        vertical: Bool,
+        includesIcon: Bool = true
+    ) -> some View {
+        ZStack {
+            quota
+                .opacity(compactCarouselShowsSession ? 0 : 1)
+
+            Group {
+                if vertical {
+                    compactCodexTaskVertical(session, capsule: true)
+                } else {
+                    HStack(spacing: 4) {
+                        if includesIcon {
+                            Image(systemName: "terminal")
+                                .font(.system(size: 8.5, weight: .semibold))
+                        }
+                        Text(session.taskName)
+                            .font(.system(size: 9, weight: .semibold))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(maxWidth: 72)
+                        Text(session.status.title)
+                            .font(.system(size: 8, weight: .semibold))
+                        Text(compactCodexTaskDurationText(session))
+                            .font(.system(size: 8.5).monospacedDigit())
+                    }
+                    .foregroundStyle(codexTaskTint(session))
+                }
+            }
+            .opacity(compactCarouselShowsSession ? 1 : 0)
+        }
+        .animation(.easeInOut(duration: 0.2), value: compactCarouselShowsSession)
+        .help("\(session.projectName) · \(session.taskName)")
+    }
+
+    private func codexTaskTint(_ session: CodexTaskSession) -> Color {
+        session.status == .running ? Color.accentColor : .secondary
+    }
+
+    private func compactCodexTaskDurationText(_ session: CodexTaskSession) -> String {
+        let endDate = session.endedAt ?? sessionNow
+        let seconds = max(0, Int(endDate.timeIntervalSince(session.startedAt)))
+        if seconds < 60 { return "<1分" }
+        if seconds < 3600 { return "\(seconds / 60)分" }
+
+        let hours = seconds / 3600
+        let minutes = (seconds % 3600) / 60
+        return minutes == 0 ? "\(hours)时" : "\(hours)时\(minutes)分"
     }
 
     private func canDragSourceEntry(_ entry: UsageSourceEntry) -> Bool {

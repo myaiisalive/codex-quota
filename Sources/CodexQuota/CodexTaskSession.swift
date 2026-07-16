@@ -50,6 +50,27 @@ enum CodexTaskDisplaySettings {
     }
 }
 
+enum CodexTaskCompactDisplayStyle: String, CaseIterable, Identifiable {
+    case stacked
+    case capsule
+    case badge
+    case carousel
+
+    static let storageKey = "codexTaskCompactDisplayStyle"
+    static let defaultValue: CodexTaskCompactDisplayStyle = .badge
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .stacked: return "双层"
+        case .capsule: return "胶囊"
+        case .badge: return "角标"
+        case .carousel: return "轮播"
+        }
+    }
+}
+
 enum CodexTaskSessionReader {
     private static let tailReadSizes: [Int] = [
         128 * 1024,

@@ -62,6 +62,7 @@ private struct AppearanceTab: View {
     @AppStorage(FloatingQuotaStyle.storageKey) private var panelStyleRaw: String = FloatingQuotaStyle.defaultValue.rawValue
     @AppStorage(FloatingPanelState.edgeSnapEnabledKey) private var edgeSnapEnabled = false
     @AppStorage(CodexTaskDisplaySettings.showSessionsKey) private var showCodexSessions = true
+    @AppStorage(CodexTaskCompactDisplayStyle.storageKey) private var compactSessionStyleRaw = CodexTaskCompactDisplayStyle.defaultValue.rawValue
     @AppStorage(UsageSourceDisplaySettings.showInactiveSourcesKey) private var showInactiveSources = false
     @AppStorage(UsageSourceDisplaySettings.showInactiveOfficialResetTimesKey) private var showInactiveOfficialResetTimes = true
     @AppStorage("dimmedOpacity") private var dimmedOpacity: Double = 0.35
@@ -109,7 +110,19 @@ private struct AppearanceTab: View {
 
                 VStack(alignment: .leading, spacing: 8) {
                     Toggle("显示 Codex 会话", isOn: $showCodexSessions)
-                    Text("默认开启。打开后，大浮窗里会显示最近正在进行和刚结束不久的 Codex 会话，也可以手动关闭某一条。")
+                    Text("默认开启。打开后，会显示最近正在进行和刚结束不久的 Codex 会话，也可以手动关闭某一条。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+
+                    Picker("小窗和吸附条中的显示方式", selection: $compactSessionStyleRaw) {
+                        ForEach(CodexTaskCompactDisplayStyle.allCases) { style in
+                            Text(style.title).tag(style.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(!showCodexSessions)
+
+                    Text("默认使用角标。这个设置只影响经典小窗和屏幕边缘的吸附条，大窗仍会显示完整会话信息。")
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                 }

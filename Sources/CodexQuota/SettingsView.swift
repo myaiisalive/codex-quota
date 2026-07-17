@@ -63,6 +63,8 @@ private struct AppearanceTab: View {
     @AppStorage(FloatingPanelState.edgeSnapEnabledKey) private var edgeSnapEnabled = false
     @AppStorage(CodexTaskDisplaySettings.showSessionsKey) private var showCodexSessions = true
     @AppStorage(CodexTaskCompactDisplayStyle.storageKey) private var compactSessionStyleRaw = CodexTaskCompactDisplayStyle.defaultValue.rawValue
+    @AppStorage(CodexTaskDisplaySettings.verticalEdgeWidthKey) private var verticalEdgeWidth = CodexTaskDisplaySettings.defaultVerticalEdgeWidth
+    @AppStorage(CodexTaskDisplaySettings.horizontalEdgeHeightKey) private var horizontalEdgeHeight = CodexTaskDisplaySettings.defaultHorizontalEdgeHeight
     @AppStorage(UsageSourceDisplaySettings.showInactiveSourcesKey) private var showInactiveSources = false
     @AppStorage(UsageSourceDisplaySettings.showInactiveOfficialResetTimesKey) private var showInactiveOfficialResetTimes = true
     @AppStorage("dimmedOpacity") private var dimmedOpacity: Double = 0.35
@@ -148,6 +150,30 @@ private struct AppearanceTab: View {
                     Text("\(CodexTaskCompactDisplayStyle(rawValue: compactSessionStyleRaw)?.detail ?? CodexTaskCompactDisplayStyle.defaultValue.detail)默认使用角标；下排四种样式会显示全部会话、状态和运行时间。")
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("完整会话吸附尺寸")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        LabeledSliderRow(
+                            title: "纵向吸附宽度",
+                            value: $verticalEdgeWidth,
+                            range: CodexTaskDisplaySettings.verticalEdgeWidthRange,
+                            step: 8,
+                            valueText: "\(Int(verticalEdgeWidth)) 点",
+                            hint: "调宽后，会话名称、项目、状态和时间会自动排成一行。"
+                        )
+                        LabeledSliderRow(
+                            title: "横向吸附高度",
+                            value: $horizontalEdgeHeight,
+                            range: CodexTaskDisplaySettings.horizontalEdgeHeightRange,
+                            step: 2,
+                            valueText: "\(Int(horizontalEdgeHeight)) 点",
+                            hint: "调高后，会话会自动分成更多行显示。"
+                        )
+                    }
+                    .disabled(!showCodexSessions)
+                    .opacity(showCodexSessions ? 1 : 0.5)
                 }
 
                 VStack(alignment: .leading, spacing: 8) {

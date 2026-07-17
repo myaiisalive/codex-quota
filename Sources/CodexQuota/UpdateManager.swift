@@ -72,6 +72,8 @@ final class UpdateManager: ObservableObject {
     private static let ignoredVersionKey = "UpdateManager.ignoredVersion"
     private static let checkInterval: TimeInterval = 12 * 60 * 60
     private static let releaseURL = URL(string: "https://api.github.com/repos/myaiisalive/codex-quota/releases/latest")!
+    private static let maximumReleaseResponseSize = 2 * 1024 * 1024
+    private static let maximumProcessOutputSize = 8 * 1024 * 1024
     private static let bundleID = "com.local.codexquota"
     private static let knownBrewPaths = [
         "/opt/homebrew/bin/brew",
@@ -190,7 +192,12 @@ final class UpdateManager: ObservableObject {
         request.timeoutInterval = 10
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("CodexQuota/\(BundleVersion.current.shortVersion)", forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await BoundedURLLoader.data(
+            for: request,
+            maxBytes: Self.maximumReleaseResponseSize,
+            resourceTimeout: 15,
+            cachePolicy: .useProtocolCachePolicy
+        )
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw UpdateError.networkUnavailable
         }
@@ -468,18 +475,45 @@ final class UpdateManager: ObservableObject {
     }
 
     private static func runProcess(executableURL: URL, arguments: [String]) async throws -> (status: Int32, stdout: String, stderr: String) {
-        try await Task.detached(priority: .userInitiated) {
+        let maximumOutputSize = Self.maximumProcessOutputSize
+        return try await Task.detached(priority: .userInitiated) {
+            let workspace = FileManager.default.temporaryDirectory
+                .appendingPathComponent("CodexQuotaProcess-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: workspace) }
+
+            let stdoutURL = workspace.appendingPathComponent("stdout")
+            let stderrURL = workspace.appendingPathComponent("stderr")
+            FileManager.default.createFile(atPath: stdoutURL.path, contents: nil)
+            FileManager.default.createFile(atPath: stderrURL.path, contents: nil)
+            let stdoutHandle = try FileHandle(forWritingTo: stdoutURL)
+            let stderrHandle = try FileHandle(forWritingTo: stderrURL)
+            defer {
+                try? stdoutHandle.close()
+                try? stderrHandle.close()
+            }
+
             let process = Process()
             process.executableURL = executableURL
             process.arguments = arguments
-            let stdout = Pipe()
-            let stderr = Pipe()
-            process.standardOutput = stdout
-            process.standardError = stderr
+            // 使用临时文件持续接收输出，避免子进程因管道写满而永久等待。
+            process.standardOutput = stdoutHandle
+            process.standardError = stderrHandle
             try process.run()
             process.waitUntilExit()
-            let out = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            let err = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            try stdoutHandle.close()
+            try stderrHandle.close()
+
+            let outData = try BoundedFileReader.data(
+                from: stdoutURL,
+                maxBytes: maximumOutputSize
+            )
+            let errData = try BoundedFileReader.data(
+                from: stderrURL,
+                maxBytes: maximumOutputSize
+            )
+            let out = String(decoding: outData, as: UTF8.self)
+            let err = String(decoding: errData, as: UTF8.self)
             return (process.terminationStatus, out, err)
         }.value
     }

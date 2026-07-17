@@ -67,6 +67,11 @@ struct RateLimits: Codable, Equatable {
         return !name.isEmpty
     }
 
+    /// 主额度可能只有一个时间窗口，不能因为窗口少就排在旧的双窗口额度后面。
+    var isMainQuota: Bool {
+        hasQuotaWindows && !isNamedModelQuota && individualLimit == nil
+    }
+
     /// 分数越高越像“应该展示给用户的主额度”。
     var displayPriority: Int {
         guard hasQuotaWindows else { return -1 }

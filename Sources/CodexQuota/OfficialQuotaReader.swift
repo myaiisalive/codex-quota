@@ -3,18 +3,12 @@ import Foundation
 /// 直接使用 Codex 官方登录态请求最新额度，避免只能等 session 文件落盘。
 enum OfficialQuotaReader {
     private static let usageURL = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
+    private static let maximumAuthFileSize = 1024 * 1024
+    private static let maximumResponseSize = 1024 * 1024
 
     private static let authFileURL: URL = {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return home.appendingPathComponent(".codex/auth.json", isDirectory: false)
-    }()
-
-    private static let session: URLSession = {
-        let config = URLSessionConfiguration.ephemeral
-        config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        config.timeoutIntervalForRequest = 10
-        config.timeoutIntervalForResource = 15
-        return URLSession(configuration: config)
     }()
 
     static func loadLatest() async -> QuotaSnapshot? {
@@ -25,6 +19,7 @@ enum OfficialQuotaReader {
         request.setValue("Bearer \(auth.accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 10
         if let accountId = auth.accountId, !accountId.isEmpty {
             // 显式绑定当前 Codex 账号，避免多账号机器读到默认账号的额度。
             request.setValue(accountId, forHTTPHeaderField: "ChatGPT-Account-Id")
@@ -32,7 +27,11 @@ enum OfficialQuotaReader {
         }
 
         do {
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await BoundedURLLoader.data(
+                for: request,
+                maxBytes: maximumResponseSize,
+                resourceTimeout: 15
+            )
             guard let http = response as? HTTPURLResponse,
                   (200..<300).contains(http.statusCode) else {
                 return nil
@@ -81,7 +80,7 @@ enum OfficialQuotaReader {
     }
 
     private static func loadAuthContext() -> AuthContext? {
-        guard let data = try? Data(contentsOf: authFileURL),
+        guard let data = try? BoundedFileReader.data(from: authFileURL, maxBytes: maximumAuthFileSize),
               let authFile = try? JSONDecoder().decode(AuthFile.self, from: data),
               let accessToken = authFile.tokens?.accessToken?.trimmingCharacters(in: .whitespacesAndNewlines),
               !accessToken.isEmpty else {

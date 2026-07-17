@@ -2,6 +2,7 @@ import Foundation
 
 /// 从 ~/.codex/config.toml 读出当前活跃的第三方 provider 信息
 struct CodexConfig: Equatable {
+    private static let maximumConfigFileSize = 1024 * 1024
     let providerKey: String
     let providerName: String
     let baseUrl: String
@@ -11,10 +12,13 @@ struct CodexConfig: Equatable {
     var isThirdPartyApiMode: Bool { true }
 
     static func loadActive() -> CodexConfig? {
-        let configPath = NSString(string: "~/.codex/config.toml").expandingTildeInPath
-        let authPath = NSString(string: "~/.codex/auth.json").expandingTildeInPath
-        guard let configText = try? String(contentsOfFile: configPath, encoding: .utf8) else { return nil }
-        let authData = try? Data(contentsOf: URL(fileURLWithPath: authPath))
+        let configURL = URL(fileURLWithPath: NSString(string: "~/.codex/config.toml").expandingTildeInPath)
+        let authURL = URL(fileURLWithPath: NSString(string: "~/.codex/auth.json").expandingTildeInPath)
+        guard let configText = try? BoundedFileReader.string(
+            from: configURL,
+            maxBytes: maximumConfigFileSize
+        ) else { return nil }
+        let authData = try? BoundedFileReader.data(from: authURL, maxBytes: maximumConfigFileSize)
         return parse(configText: configText, authData: authData)
     }
 

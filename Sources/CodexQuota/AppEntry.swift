@@ -847,8 +847,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func diskBundleVersion() -> BundleVersion? {
-        let infoPath = Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist").path
-        guard let info = NSDictionary(contentsOfFile: infoPath) as? [String: Any] else { return nil }
+        let infoURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist")
+        guard let data = try? BoundedFileReader.data(from: infoURL, maxBytes: 1024 * 1024),
+              let info = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        else { return nil }
         return BundleVersion(infoDictionary: info)
     }
 
@@ -1006,6 +1008,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 @MainActor
 enum AppEntry {
     static func main() {
+        if UsageScriptRunner.runWorkerIfRequested() {
+            return
+        }
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate

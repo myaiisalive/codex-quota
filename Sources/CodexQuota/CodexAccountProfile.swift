@@ -25,6 +25,7 @@ struct CodexAccountProfile: Codable, Equatable {
 }
 
 enum CodexAccountProfileReader {
+    private static let maximumAuthFileSize = 1024 * 1024
     private static let authFileURL: URL = {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return home.appendingPathComponent(".codex/auth.json", isDirectory: false)
@@ -39,7 +40,7 @@ enum CodexAccountProfileReader {
     }
 
     static func loadCurrent() -> CodexAccountProfile? {
-        guard let data = try? Data(contentsOf: authFileURL),
+        guard let data = try? BoundedFileReader.data(from: authFileURL, maxBytes: maximumAuthFileSize),
               let authFile = try? JSONDecoder().decode(AuthFile.self, from: data) else {
             return nil
         }

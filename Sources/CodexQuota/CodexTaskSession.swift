@@ -41,6 +41,13 @@ struct CodexTaskSession: Identifiable, Equatable {
 
 enum CodexTaskDisplaySettings {
     static let showSessionsKey = "showCodexTaskSessions"
+    // 默认值沿用已上线的完整会话吸附尺寸，旧用户升级后外观不变。
+    static let verticalEdgeWidthKey = "codexTaskVerticalEdgeWidth"
+    static let horizontalEdgeHeightKey = "codexTaskHorizontalEdgeHeight"
+    static let defaultVerticalEdgeWidth = 96.0
+    static let defaultHorizontalEdgeHeight = 24.0
+    static let verticalEdgeWidthRange = 96.0...280.0
+    static let horizontalEdgeHeightRange = 24.0...90.0
 
     static func isEnabled() -> Bool {
         if UserDefaults.standard.object(forKey: showSessionsKey) == nil {
@@ -103,6 +110,8 @@ enum CodexTaskSessionReader {
     private static let maximumTailReadSize = 8 * 1024 * 1024
     private static let maximumHeadReadSize = 64 * 1024
     private static let sessionIndexReadSize = 2 * 1024 * 1024
+    private static let processActivityReadLimit = 2 * 1024 * 1024
+    private static let processActivityRecency: TimeInterval = 10 * 60
     private static let tailReadSizes: [Int] = [
         128 * 1024,
         512 * 1024,
@@ -112,6 +121,7 @@ enum CodexTaskSessionReader {
     private static let cacheLock = NSLock()
     private static var sessionFileCache: [String: CachedSessionFile] = [:]
     private static var threadNameCache: CachedThreadNames?
+    private static var processActivityCache: CachedProcessActivities?
 
     private static let codexRoot: URL = {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -119,9 +129,16 @@ enum CodexTaskSessionReader {
     }()
 
     private static let sessionIndexURL = codexRoot.appendingPathComponent("session_index.jsonl", isDirectory: false)
+    private static let processActivityURL = codexRoot
+        .appendingPathComponent("process_manager", isDirectory: true)
+        .appendingPathComponent("chat_processes.json", isDirectory: false)
 
     static var sessionIndexWatchPath: String {
         sessionIndexURL.path
+    }
+
+    static var processActivityWatchPath: String {
+        processActivityURL.path
     }
 
     private static let isoFormatterWithFractionalSeconds: ISO8601DateFormatter = {
@@ -142,16 +159,26 @@ enum CodexTaskSessionReader {
         defer { cacheLock.unlock() }
 
         let threadNames = loadThreadNames()
+        let processActivities = loadRecentProcessActivities(referenceDate: Date())
         let files = QuotaReader.findSessionFiles(limit: limit)
         let recentPaths = Set(files.map(\.path))
         sessionFileCache = sessionFileCache.filter { recentPaths.contains($0.key) }
 
         var newestByThreadID: [String: CodexTaskSession] = [:]
         for file in files {
-            guard let task = extractLatestTask(from: file, threadNames: threadNames) else {
-                continue
-            }
-            let threadID = task.threadID
+            let logTask = extractLatestTask(from: file, threadNames: threadNames)
+            let threadID = logTask?.threadID
+                ?? loadSessionHeader(from: file)?.sessionID
+                ?? threadID(from: file)
+            guard let threadID else { continue }
+
+            let task = resolvedTask(
+                logTask: logTask,
+                activity: processActivities[threadID],
+                threadID: threadID,
+                preferredTitle: threadNames[threadID]
+            )
+            guard let task else { continue }
 
             if let existing = newestByThreadID[threadID] {
                 if task.sortDate > existing.sortDate {
@@ -168,6 +195,33 @@ enum CodexTaskSessionReader {
             }
             return lhs.sortDate > rhs.sortDate
         }
+    }
+
+    private static func resolvedTask(
+        logTask: CodexTaskSession?,
+        activity: ProcessActivity?,
+        threadID: String,
+        preferredTitle: String?
+    ) -> CodexTaskSession? {
+        guard let activity else { return logTask }
+
+        if let logTask {
+            // 同一轮次以日志为准，尤其不能覆盖 task_complete 的结束状态。
+            if logTask.turnID == activity.turnID || logTask.sortDate >= activity.updatedAt {
+                return logTask
+            }
+        }
+
+        return CodexTaskSession(
+            id: "\(threadID):\(activity.turnID)",
+            threadID: threadID,
+            turnID: activity.turnID,
+            projectName: projectName(from: activity.cwd),
+            taskName: preferredTitle ?? "未命名会话",
+            status: .running,
+            startedAt: activity.startedAt,
+            endedAt: nil
+        )
     }
 
     private static func extractLatestTask(
@@ -273,7 +327,12 @@ enum CodexTaskSessionReader {
             }
 
             if latestTaskInfo == nil {
-                latestTaskInfo = latestTask(from: envelope)
+                guard let task = latestTask(from: envelope) else { continue }
+                latestTaskInfo = task
+                // turn_context 自带当前轮次的项目路径，无需继续向前查找。
+                if envelope.type == "turn_context" {
+                    cwd = trimmed(envelope.payload?.cwd)
+                }
                 continue
             }
 
@@ -339,6 +398,18 @@ enum CodexTaskSessionReader {
     }
 
     private static func latestTask(from envelope: SessionEnvelope) -> LatestTask? {
+        if envelope.type == "turn_context",
+           let payload = envelope.payload,
+           let turnID = trimmed(payload.turnID),
+           let startedAt = parsedDate(from: envelope.timestamp) {
+            return LatestTask(
+                turnID: turnID,
+                status: .running,
+                startedAt: startedAt,
+                endedAt: nil
+            )
+        }
+
         guard envelope.type == "event_msg",
               let payload = envelope.payload,
               let turnID = trimmed(payload.turnID) else {
@@ -418,6 +489,84 @@ enum CodexTaskSessionReader {
         let result = names.mapValues(\.title)
         threadNameCache = CachedThreadNames(fingerprint: fingerprint, names: result)
         return result
+    }
+
+    private static func loadRecentProcessActivities(
+        referenceDate: Date
+    ) -> [String: ProcessActivity] {
+        guard let fingerprint = fileFingerprint(of: processActivityURL) else {
+            processActivityCache = nil
+            return [:]
+        }
+
+        let activities: [String: ProcessActivity]
+        if let cached = processActivityCache,
+           cached.fingerprint == fingerprint {
+            activities = cached.activities
+        } else {
+            guard let data = try? BoundedFileReader.data(
+                from: processActivityURL,
+                maxBytes: processActivityReadLimit
+            ),
+            let records = try? JSONDecoder().decode([ProcessActivityRecord].self, from: data) else {
+                processActivityCache = nil
+                return [:]
+            }
+            activities = latestProcessActivities(from: records)
+            processActivityCache = CachedProcessActivities(
+                fingerprint: fingerprint,
+                activities: activities
+            )
+        }
+
+        let cutoff = referenceDate.addingTimeInterval(-processActivityRecency)
+        return activities.filter { $0.value.updatedAt >= cutoff }
+    }
+
+    private static func latestProcessActivities(
+        from records: [ProcessActivityRecord]
+    ) -> [String: ProcessActivity] {
+        var activitiesByTurn: [String: ProcessActivity] = [:]
+
+        for record in records {
+            guard let threadID = trimmed(record.conversationID),
+                  let turnID = trimmed(record.turnID),
+                  let startedAtMS = record.startedAtMS,
+                  let updatedAtMS = record.updatedAtMS else {
+                continue
+            }
+
+            let key = "\(threadID):\(turnID)"
+            let startedAt = Date(timeIntervalSince1970: startedAtMS / 1000)
+            let updatedAt = Date(timeIntervalSince1970: updatedAtMS / 1000)
+            if let existing = activitiesByTurn[key] {
+                activitiesByTurn[key] = ProcessActivity(
+                    turnID: turnID,
+                    startedAt: min(existing.startedAt, startedAt),
+                    updatedAt: max(existing.updatedAt, updatedAt),
+                    cwd: trimmed(record.cwd) ?? existing.cwd
+                )
+            } else {
+                activitiesByTurn[key] = ProcessActivity(
+                    turnID: turnID,
+                    startedAt: startedAt,
+                    updatedAt: updatedAt,
+                    cwd: trimmed(record.cwd)
+                )
+            }
+        }
+
+        var latestByThreadID: [String: ProcessActivity] = [:]
+        for (key, activity) in activitiesByTurn {
+            guard let separator = key.firstIndex(of: ":") else { continue }
+            let threadID = String(key[..<separator])
+            if let existing = latestByThreadID[threadID],
+               existing.updatedAt >= activity.updatedAt {
+                continue
+            }
+            latestByThreadID[threadID] = activity
+        }
+        return latestByThreadID
     }
 
     private static func loadSessionHeader(from url: URL) -> SessionHeader? {
@@ -528,6 +677,41 @@ enum CodexTaskSessionReader {
     static func readHeadTextForTesting(from url: URL, bytesToRead: Int) -> String? {
         readHeadText(from: url, bytesToRead: bytesToRead)
     }
+
+    static func extractLatestTaskForTesting(
+        from url: URL,
+        threadNames: [String: String]
+    ) -> CodexTaskSession? {
+        extractLatestTask(from: url, threadNames: threadNames)
+    }
+
+    static func processActivityForTesting(
+        from data: Data,
+        threadID: String
+    ) -> (turnID: String, startedAt: Date, updatedAt: Date, cwd: String?)? {
+        guard let records = try? JSONDecoder().decode([ProcessActivityRecord].self, from: data),
+              let activity = latestProcessActivities(from: records)[threadID] else {
+            return nil
+        }
+        return (activity.turnID, activity.startedAt, activity.updatedAt, activity.cwd)
+    }
+
+    static func resolvedTaskForTesting(
+        logTask: CodexTaskSession?,
+        activityData: Data,
+        threadID: String,
+        preferredTitle: String?
+    ) -> CodexTaskSession? {
+        guard let records = try? JSONDecoder().decode([ProcessActivityRecord].self, from: activityData) else {
+            return logTask
+        }
+        return resolvedTask(
+            logTask: logTask,
+            activity: latestProcessActivities(from: records)[threadID],
+            threadID: threadID,
+            preferredTitle: preferredTitle
+        )
+    }
 #endif
 
     private static func fileFingerprint(of url: URL) -> FileFingerprint? {
@@ -559,6 +743,18 @@ private extension CodexTaskSessionReader {
     struct CachedThreadNames {
         let fingerprint: FileFingerprint
         let names: [String: String]
+    }
+
+    struct CachedProcessActivities {
+        let fingerprint: FileFingerprint
+        let activities: [String: ProcessActivity]
+    }
+
+    struct ProcessActivity {
+        let turnID: String
+        let startedAt: Date
+        let updatedAt: Date
+        let cwd: String?
     }
 
     struct TailScanResult {
@@ -593,6 +789,22 @@ private extension CodexTaskSessionReader {
             case id
             case threadName = "thread_name"
             case updatedAt = "updated_at"
+        }
+    }
+
+    struct ProcessActivityRecord: Decodable {
+        let conversationID: String?
+        let turnID: String?
+        let startedAtMS: TimeInterval?
+        let updatedAtMS: TimeInterval?
+        let cwd: String?
+
+        enum CodingKeys: String, CodingKey {
+            case conversationID = "conversationId"
+            case turnID = "turnId"
+            case startedAtMS = "startedAtMs"
+            case updatedAtMS = "updatedAtMs"
+            case cwd
         }
     }
 

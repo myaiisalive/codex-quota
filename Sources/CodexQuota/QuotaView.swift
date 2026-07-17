@@ -1,6 +1,7 @@
 import SwiftUI
 
 private let sourceHistoryCoordinateSpace = "sourceHistorySection"
+private let wideVerticalEdgeMinimumWidth: CGFloat = 184
 
 private enum CompactCodexTaskPlacement {
     case smallWindow
@@ -15,6 +16,8 @@ struct QuotaView: View {
     @AppStorage(FloatingQuotaStyle.storageKey) private var styleRaw: String = FloatingQuotaStyle.defaultValue.rawValue
     @AppStorage(CodexTaskDisplaySettings.showSessionsKey) private var showCodexSessions = true
     @AppStorage(CodexTaskCompactDisplayStyle.storageKey) private var compactSessionStyleRaw = CodexTaskCompactDisplayStyle.defaultValue.rawValue
+    @AppStorage(CodexTaskDisplaySettings.verticalEdgeWidthKey) private var verticalEdgeWidth = CodexTaskDisplaySettings.defaultVerticalEdgeWidth
+    @AppStorage(CodexTaskDisplaySettings.horizontalEdgeHeightKey) private var horizontalEdgeHeight = CodexTaskDisplaySettings.defaultHorizontalEdgeHeight
     @AppStorage(UsageSourceDisplaySettings.showInactiveSourcesKey) private var showInactiveSources = false
     @AppStorage(UsageSourceDisplaySettings.showInactiveOfficialResetTimesKey) private var showInactiveOfficialResetTimes = true
     @AppStorage("dimmedOpacity") private var dimmedOpacity: Double = 0.35
@@ -40,6 +43,33 @@ struct QuotaView: View {
 
     private var compactSessionStyle: CodexTaskCompactDisplayStyle {
         CodexTaskCompactDisplayStyle(rawValue: compactSessionStyleRaw) ?? .badge
+    }
+
+    private var sessionRefreshIntervalSeconds: UInt64 {
+        let hasVisibleSession = showCodexSessions &&
+            !store.visibleCodexTaskSessions(referenceDate: sessionNow).isEmpty
+        return hasVisibleSession ? 1 : 60
+    }
+
+    private var verticalEdgeBarWidth: CGFloat {
+        guard !visibleCodexTaskSessions.isEmpty, compactSessionStyle.showsAllSessions else {
+            return 30
+        }
+        let range = CodexTaskDisplaySettings.verticalEdgeWidthRange
+        return CGFloat(min(max(verticalEdgeWidth, range.lowerBound), range.upperBound))
+    }
+
+    private var horizontalEdgeBarHeight: CGFloat? {
+        guard !visibleCodexTaskSessions.isEmpty, compactSessionStyle.showsAllSessions else {
+            return nil
+        }
+        return horizontalEdgeLayoutMetrics(
+            sessionCount: visibleCodexTaskSessions.count
+        ).barHeight
+    }
+
+    private var usesWideVerticalEdgeLayout: Bool {
+        verticalEdgeBarWidth >= wideVerticalEdgeMinimumWidth
     }
 
     var body: some View {
@@ -75,8 +105,17 @@ struct QuotaView: View {
         .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { now in
             historyNow = now
         }
-        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { now in
-            sessionNow = now
+        .onChange(of: store.codexTaskSessions) { _ in
+            sessionNow = Date()
+        }
+        .task(id: sessionRefreshIntervalSeconds) {
+            while !Task.isCancelled {
+                try? await Task.sleep(
+                    nanoseconds: sessionRefreshIntervalSeconds * 1_000_000_000
+                )
+                guard !Task.isCancelled else { return }
+                sessionNow = Date()
+            }
         }
         .alert(item: $pendingDeletionEntry) { entry in
             Alert(
@@ -855,6 +894,7 @@ struct QuotaView: View {
         )
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
+        .frame(height: horizontalEdgeBarHeight)
         .background(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(Color(nsColor: .windowBackgroundColor).opacity(0.96))
@@ -869,12 +909,12 @@ struct QuotaView: View {
 
     private var verticalEdgeBar: some View {
         compactCodexTaskLayout(
-            quota: AnyView(verticalEdgeQuotaContent),
+            quota: AnyView(adaptiveVerticalEdgeQuotaContent),
             placement: .verticalEdge
         )
         .padding(.horizontal, 3)
         .padding(.vertical, 6)
-        .frame(width: visibleCodexTaskSessions.isEmpty || !compactSessionStyle.showsAllSessions ? 30 : 96)
+        .frame(width: verticalEdgeBarWidth)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color(nsColor: .windowBackgroundColor).opacity(0.96))
@@ -885,6 +925,15 @@ struct QuotaView: View {
         )
         .shadow(color: .black.opacity(0.05), radius: 4, y: 1)
         .fixedSize()
+    }
+
+    @ViewBuilder
+    private var adaptiveVerticalEdgeQuotaContent: some View {
+        if usesWideVerticalEdgeLayout {
+            horizontalEdgeQuotaContent
+        } else {
+            verticalEdgeQuotaContent
+        }
     }
 
     private var cardPanel: some View {
@@ -2296,26 +2345,62 @@ struct QuotaView: View {
         quota: AnyView,
         sessions: [CodexTaskSession]
     ) -> some View {
-        // 横向吸附固定单行高度，把可用宽度优先留给会话和项目名称。
-        let columnCount = min(3, max(1, sessions.count))
-        let itemWidth: CGFloat = 268
-        let spacing: CGFloat = 2
+        let metrics = horizontalEdgeLayoutMetrics(sessionCount: sessions.count)
         let columns = Array(
-            repeating: GridItem(.fixed(itemWidth), spacing: spacing),
-            count: columnCount
+            repeating: GridItem(.fixed(metrics.itemWidth), spacing: metrics.spacing),
+            count: metrics.columnCount
         )
-        let gridWidth = CGFloat(columnCount) * itemWidth + CGFloat(columnCount - 1) * spacing
 
         return AnyView(
             HStack(spacing: 4) {
                 quota
-                LazyVGrid(columns: columns, alignment: .leading, spacing: spacing) {
+                LazyVGrid(columns: columns, alignment: .leading, spacing: metrics.spacing) {
                     ForEach(sessions) { session in
-                        compactHorizontalEdgeSessionItem(session, width: itemWidth)
+                        compactHorizontalEdgeSessionItem(session, width: metrics.itemWidth)
                     }
                 }
-                .frame(width: gridWidth)
+                .frame(width: metrics.gridWidth)
             }
+        )
+    }
+
+    private func horizontalEdgeLayoutMetrics(
+        sessionCount: Int
+    ) -> (
+        itemWidth: CGFloat,
+        spacing: CGFloat,
+        columnCount: Int,
+        gridWidth: CGFloat,
+        barHeight: CGFloat
+    ) {
+        let itemWidth: CGFloat = 268
+        let itemHeight: CGFloat = 20
+        let spacing: CGFloat = 2
+        let verticalPadding: CGFloat = 4
+        let range = CodexTaskDisplaySettings.horizontalEdgeHeightRange
+        let requestedHeight = CGFloat(
+            min(max(horizontalEdgeHeight, range.lowerBound), range.upperBound)
+        )
+        let availableHeight = max(itemHeight, requestedHeight - verticalPadding)
+        // 高度决定会话行数，每行最多三条，避免横条无限变宽。
+        let preferredRows = max(
+            1,
+            Int((availableHeight + spacing) / (itemHeight + spacing))
+        )
+        let columnCount = min(
+            3,
+            max(1, Int(ceil(Double(sessionCount) / Double(preferredRows))))
+        )
+        let rowCount = max(1, Int(ceil(Double(sessionCount) / Double(columnCount))))
+        let gridWidth = CGFloat(columnCount) * itemWidth + CGFloat(columnCount - 1) * spacing
+        let contentHeight = CGFloat(rowCount) * itemHeight + CGFloat(rowCount - 1) * spacing
+
+        return (
+            itemWidth,
+            spacing,
+            columnCount,
+            gridWidth,
+            max(requestedHeight, contentHeight + verticalPadding)
         )
     }
 
@@ -2323,11 +2408,11 @@ struct QuotaView: View {
         quota: AnyView,
         sessions: [CodexTaskSession]
     ) -> some View {
-        // 纵向吸附使用窄卡片，名称超出时省略，状态和时长始终完整显示。
-        VStack(spacing: 3) {
+        let itemWidth = max(88, verticalEdgeBarWidth - 8)
+        return VStack(spacing: 3) {
             quota
             ForEach(sessions) { session in
-                compactVerticalEdgeSessionItem(session, width: 88)
+                compactVerticalEdgeSessionItem(session, width: itemWidth)
             }
         }
     }
@@ -2370,7 +2455,57 @@ struct QuotaView: View {
         .help("\(session.projectName) · \(session.taskName)")
     }
 
+    @ViewBuilder
     private func compactVerticalEdgeSessionItem(
+        _ session: CodexTaskSession,
+        width: CGFloat
+    ) -> some View {
+        // 竖条达到 184 点后，额度和会话统一切成紧凑横排。
+        if width >= wideVerticalEdgeMinimumWidth - 8 {
+            compactVerticalEdgeSingleLineSessionItem(session, width: width)
+        } else {
+            compactVerticalEdgeStackedSessionItem(session, width: width)
+        }
+    }
+
+    private func compactVerticalEdgeSingleLineSessionItem(
+        _ session: CodexTaskSession,
+        width: CGFloat
+    ) -> some View {
+        let onAccent = compactSessionStyle == .statusCards && session.status == .running
+        return HStack(spacing: 4) {
+            Image(systemName: "terminal")
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundStyle(onAccent ? Color.white : codexTaskTint(session))
+
+            Text(session.taskName)
+                .font(.system(size: 8.5, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(2)
+                .foregroundStyle(onAccent ? Color.white : Color.primary)
+
+            Text(session.projectName)
+                .font(.system(size: 8))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(1)
+                .foregroundStyle(onAccent ? Color.white.opacity(0.82) : Color.secondary)
+
+            compactEdgeTaskStatusLabel(session, onAccent: onAccent, short: true)
+            Text(compactCodexTaskDurationText(session))
+                .font(.system(size: 7.5).monospacedDigit())
+                .foregroundStyle(onAccent ? Color.white.opacity(0.86) : Color.secondary)
+                .fixedSize()
+        }
+        .padding(.horizontal, 5)
+        .frame(width: width, height: 20)
+        .background(compactEdgeTaskBackground(session, cornerRadius: 7))
+        .overlay(compactEdgeTaskBorder(session, cornerRadius: 7))
+        .help("\(session.projectName) · \(session.taskName)")
+    }
+
+    private func compactVerticalEdgeStackedSessionItem(
         _ session: CodexTaskSession,
         width: CGFloat
     ) -> some View {
@@ -2413,11 +2548,16 @@ struct QuotaView: View {
 
     private func compactEdgeTaskStatusLabel(
         _ session: CodexTaskSession,
-        onAccent: Bool
+        onAccent: Bool,
+        short: Bool = false
     ) -> some View {
         HStack(spacing: 2) {
             compactCodexTaskStatusPoint(session, size: 4, onAccent: onAccent)
-            Text(session.status == .running ? "进行中" : "已结束")
+            Text(
+                short
+                    ? (session.status == .running ? "运行" : "结束")
+                    : (session.status == .running ? "进行中" : "已结束")
+            )
                 .font(.system(size: 7.5, weight: .semibold))
         }
         .foregroundStyle(onAccent ? Color.white : codexTaskTint(session))

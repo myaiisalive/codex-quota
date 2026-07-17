@@ -21,6 +21,7 @@ final class QuotaStore: ObservableObject {
 
     private var watcher: SessionsWatcher?
     private var sessionIndexWatcher: SessionsWatcher?
+    private var processActivityWatcher: SessionsWatcher?
     private var authWatcher: SessionsWatcher?
     private var timer: Timer?
     private var balanceTimer: Timer?
@@ -28,6 +29,12 @@ final class QuotaStore: ObservableObject {
     private var currentOfficialSourceID: String?
     private var currentThirdPartySourceID: String?
     private var inactiveThirdPartyRefreshTask: Task<Void, Never>?
+    private var accountProfileReloadTask: Task<Void, Never>?
+    private var accountProfileReloadPending = false
+    private var officialReloadTask: Task<Void, Never>?
+    private var officialReloadPending = false
+    private var apiBalanceReloadTask: Task<Void, Never>?
+    private var apiBalanceReloadPending = false
     private var displayedOfficialSnapshotSourceID: String?
     private var codexTaskReloadTask: Task<Void, Never>?
     private var codexTaskReloadPending = false
@@ -88,6 +95,12 @@ final class QuotaStore: ObservableObject {
             onChange: { [weak self] in self?.reloadCodexTaskSessions() }
         )
         sessionIndexWatcher?.start()
+        processActivityWatcher = SessionsWatcher(
+            path: CodexTaskSessionReader.processActivityWatchPath,
+            debounceSeconds: 0.4,
+            onChange: { [weak self] in self?.reloadCodexTaskSessions() }
+        )
+        processActivityWatcher?.start()
         authWatcher = SessionsWatcher(
             path: CodexAccountProfileReader.watchRootPath,
             debounceSeconds: 0.4,
@@ -125,71 +138,107 @@ final class QuotaStore: ObservableObject {
     private func rebuildBalanceTimer() {
         balanceTimer?.invalidate()
         balanceTimer = Timer.scheduledTimer(withTimeInterval: currentInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.reloadApiBalance() }
+            Task { @MainActor in self?.reloadApiBalance(queueIfBusy: false) }
         }
     }
 
     func reloadAccountProfile() {
-        Task {
-            let profile = await Task.detached(priority: .utility) {
-                CodexAccountProfileReader.loadCurrent()
-            }.value
+        guard accountProfileReloadTask == nil else {
+            accountProfileReloadPending = true
+            return
+        }
+
+        let worker = Task.detached(priority: .utility) {
+            CodexAccountProfileReader.loadCurrent()
+        }
+        accountProfileReloadTask = Task { [weak self] in
+            let profile = await worker.value
+            guard let self else { return }
+            self.accountProfileReloadTask = nil
             self.accountProfile = profile
             self.recordOfficialSource(profile: profile, snapshot: nil)
             self.refreshCurrentSourceSelection()
             self.syncDisplayedOfficialSnapshotWithCurrentProfile()
+
+            let needsReload = self.accountProfileReloadPending
+            self.accountProfileReloadPending = false
+            if needsReload {
+                self.reloadAccountProfile()
+            }
         }
     }
 
-    func reloadApiBalance() {
-        Task {
-            // CodexConfig + CCSwitchProvider 都是同步文件/SQLite I/O，移到后台
-            let result = await Task.detached(priority: .utility) { () -> (CodexConfig, CCSwitchProvider?)? in
-                guard let codex = CodexConfig.loadActive() else { return nil }
-                let provider = CCSwitchProvider.find(for: codex)
-                return (codex, provider)
-            }.value
-
-            guard let (codex, provider) = result else {
-                self.thirdPartyApiOnly = false
-                self.currentThirdPartySourceID = nil
-                self.refreshCurrentSourceSelection()
-                self.refreshInactiveThirdPartySources(excluding: nil)
-                self.apiBalance = nil
-                self.apiBalanceError = nil
-                return
+    func reloadApiBalance(queueIfBusy: Bool = true) {
+        guard apiBalanceReloadTask == nil else {
+            if queueIfBusy {
+                apiBalanceReloadPending = true
             }
+            return
+        }
 
-            self.thirdPartyApiOnly = codex.isThirdPartyApiMode
-            guard let provider else {
-                self.currentThirdPartySourceID = nil
-                self.refreshCurrentSourceSelection()
-                self.refreshInactiveThirdPartySources(excluding: nil)
-                self.apiBalance = nil
-                self.apiBalanceError = "CC Switch 中未找到对应配置"
-                return
+        apiBalanceReloadTask = Task { [weak self] in
+            guard let self else { return }
+            await self.performApiBalanceReload()
+            self.apiBalanceReloadTask = nil
+
+            let needsReload = self.apiBalanceReloadPending
+            self.apiBalanceReloadPending = false
+            if needsReload {
+                self.reloadApiBalance()
             }
+        }
+    }
 
-            self.recordThirdPartySource(provider: provider, balance: nil)
-            self.refreshCurrentSourceSelection()
-            self.refreshInactiveThirdPartySources(excluding: self.currentThirdPartySourceID)
+    private func performApiBalanceReload() async {
+        // CodexConfig + CCSwitchProvider 都是同步文件/SQLite I/O，移到后台。
+        let result = await Task.detached(priority: .utility) { () -> (CodexConfig, CCSwitchProvider?)? in
+            guard let codex = CodexConfig.loadActive() else { return nil }
+            let provider = CCSwitchProvider.find(for: codex)
+            return (codex, provider)
+        }.value
 
-            do {
-                let balance = try await UsageScriptRunner.run(provider: provider, codexApiKey: codex.apiKey.isEmpty ? nil : codex.apiKey)
-                self.recordThirdPartySource(provider: provider, balance: balance)
-                self.refreshCurrentSourceSelection()
-                if balance.isValid {
-                    self.apiBalance = balance
-                    self.apiBalanceError = nil
-                } else {
-                    self.apiBalance = nil
-                    self.apiBalanceError = balance.invalidMessage ?? "余额查询失败"
-                }
-            } catch {
-                self.refreshCurrentSourceSelection()
-                self.apiBalance = nil
-                self.apiBalanceError = "余额查询失败：\(error)"
+        guard let (codex, provider) = result else {
+            thirdPartyApiOnly = false
+            currentThirdPartySourceID = nil
+            refreshCurrentSourceSelection()
+            refreshInactiveThirdPartySources(excluding: nil)
+            apiBalance = nil
+            apiBalanceError = nil
+            return
+        }
+
+        thirdPartyApiOnly = codex.isThirdPartyApiMode
+        guard let provider else {
+            currentThirdPartySourceID = nil
+            refreshCurrentSourceSelection()
+            refreshInactiveThirdPartySources(excluding: nil)
+            apiBalance = nil
+            apiBalanceError = "CC Switch 中未找到对应配置"
+            return
+        }
+
+        recordThirdPartySource(provider: provider, balance: nil)
+        refreshCurrentSourceSelection()
+        refreshInactiveThirdPartySources(excluding: currentThirdPartySourceID)
+
+        do {
+            let balance = try await UsageScriptRunner.run(
+                provider: provider,
+                codexApiKey: codex.apiKey.isEmpty ? nil : codex.apiKey
+            )
+            recordThirdPartySource(provider: provider, balance: balance)
+            refreshCurrentSourceSelection()
+            if balance.isValid {
+                apiBalance = balance
+                apiBalanceError = nil
+            } else {
+                apiBalance = nil
+                apiBalanceError = balance.invalidMessage ?? "余额查询失败"
             }
+        } catch {
+            refreshCurrentSourceSelection()
+            apiBalance = nil
+            apiBalanceError = "余额查询失败：\(error)"
         }
     }
 
@@ -207,74 +256,93 @@ final class QuotaStore: ObservableObject {
         let interval = currentInterval
         lastBuiltInterval = interval
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.reload() }
+            Task { @MainActor in self?.reload(queueIfBusy: false) }
         }
     }
 
-    func reload() {
+    func reload(queueIfBusy: Bool = true) {
         reloadCodexTaskSessions()
-        Task {
-            let result = await Task.detached(priority: .utility) { () -> OfficialReloadResult in
-                let profile = CodexAccountProfileReader.loadCurrent()
-                let authModifiedAt = CodexAccountProfileReader.authModifiedAt
-                if let official = await OfficialQuotaReader.loadLatest() {
-                    return OfficialReloadResult(
-                        snapshot: official,
-                        profile: profile,
-                        authModifiedAt: authModifiedAt,
-                        source: .official
-                    )
-                }
+        guard officialReloadTask == nil else {
+            if queueIfBusy {
+                officialReloadPending = true
+            }
+            return
+        }
+
+        let worker = Task.detached(priority: .utility) { () -> OfficialReloadResult in
+            let profile = CodexAccountProfileReader.loadCurrent()
+            let authModifiedAt = CodexAccountProfileReader.authModifiedAt
+            if let official = await OfficialQuotaReader.loadLatest() {
                 return OfficialReloadResult(
-                    snapshot: QuotaReader.loadLatest(),
+                    snapshot: official,
                     profile: profile,
                     authModifiedAt: authModifiedAt,
-                    source: .sessions
+                    source: .official
                 )
-            }.value
-
-            let snap = result.snapshot
-            let profile = result.profile
-            let officialSourceID = officialSourceID(for: profile)
-
-            self.accountProfile = profile
-
-            let acceptedSnapshot: QuotaSnapshot?
-            switch result.source {
-            case .official:
-                self.recordOfficialSource(profile: profile, snapshot: snap)
-                acceptedSnapshot = snap
-            case .sessions:
-                if self.shouldAcceptSessionsFallback(
-                    snapshot: snap,
-                    profile: profile,
-                    officialSourceID: officialSourceID,
-                    authModifiedAt: result.authModifiedAt
-                ) {
-                    self.recordOfficialSource(profile: profile, snapshot: snap)
-                    acceptedSnapshot = snap
-                } else {
-                    self.recordOfficialSource(profile: profile, snapshot: nil)
-                    acceptedSnapshot = nil
-                }
             }
+            return OfficialReloadResult(
+                snapshot: QuotaReader.loadLatest(),
+                profile: profile,
+                authModifiedAt: authModifiedAt,
+                source: .sessions
+            )
+        }
+        officialReloadTask = Task { [weak self] in
+            let result = await worker.value
+            guard let self else { return }
+            self.officialReloadTask = nil
+            self.applyOfficialReloadResult(result)
 
-            self.refreshCurrentSourceSelection()
+            let needsReload = self.officialReloadPending
+            self.officialReloadPending = false
+            if needsReload {
+                self.reload()
+            }
+        }
+    }
 
-            if let acceptedSnapshot {
-                self.snapshot = acceptedSnapshot
-                self.displayedOfficialSnapshotSourceID = officialSourceID
-                if let officialSourceID {
-                    UserDefaults.standard.set(officialSourceID, forKey: Self.lastConfirmedOfficialSourceKey)
-                }
-                self.lastError = nil
+    private func applyOfficialReloadResult(_ result: OfficialReloadResult) {
+        let snap = result.snapshot
+        let profile = result.profile
+        let officialSourceID = officialSourceID(for: profile)
+
+        accountProfile = profile
+
+        let acceptedSnapshot: QuotaSnapshot?
+        switch result.source {
+        case .official:
+            recordOfficialSource(profile: profile, snapshot: snap)
+            acceptedSnapshot = snap
+        case .sessions:
+            if shouldAcceptSessionsFallback(
+                snapshot: snap,
+                profile: profile,
+                officialSourceID: officialSourceID,
+                authModifiedAt: result.authModifiedAt
+            ) {
+                recordOfficialSource(profile: profile, snapshot: snap)
+                acceptedSnapshot = snap
             } else {
-                self.syncDisplayedOfficialSnapshotWithCurrentProfile()
-                if self.snapshot == nil {
-                    self.lastError = profile == nil
-                        ? "还没有读到额度，请先打开一次 Codex 并确认已登录"
-                        : "已切换账号，正在等待这个账号的最新额度同步"
-                }
+                recordOfficialSource(profile: profile, snapshot: nil)
+                acceptedSnapshot = nil
+            }
+        }
+
+        refreshCurrentSourceSelection()
+
+        if let acceptedSnapshot {
+            snapshot = acceptedSnapshot
+            displayedOfficialSnapshotSourceID = officialSourceID
+            if let officialSourceID {
+                UserDefaults.standard.set(officialSourceID, forKey: Self.lastConfirmedOfficialSourceKey)
+            }
+            lastError = nil
+        } else {
+            syncDisplayedOfficialSnapshotWithCurrentProfile()
+            if snapshot == nil {
+                lastError = profile == nil
+                    ? "还没有读到额度，请先打开一次 Codex 并确认已登录"
+                    : "已切换账号，正在等待这个账号的最新额度同步"
             }
         }
     }
@@ -331,6 +399,13 @@ final class QuotaStore: ObservableObject {
     ) -> Bool {
         guard let snapshot else { return false }
         guard profile != nil else { return true }
+
+        // 本地日志没有账号标识。当前账号已有快照时，接口偶发失败应保留旧值，
+        // 不能用其他账号或历史会话里的额度覆盖。
+        if let officialSourceID,
+           sourceHistory.first(where: { $0.id == officialSourceID })?.snapshot != nil {
+            return false
+        }
 
         if let authModifiedAt,
            snapshot.capturedAt >= authModifiedAt.addingTimeInterval(-2) {

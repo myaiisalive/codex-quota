@@ -379,8 +379,13 @@ enum UsageScriptRunner {
     }
 
     private static func closeWorkerSession(_ session: WorkerSession) {
-        stopWorker(session.process)
-        try? FileManager.default.removeItem(at: session.workspace)
+        let process = session.process
+        let workspace = session.workspace
+        // Process 的退出通知依赖主运行循环，不能在主线程同步 waitUntilExit。
+        Task.detached(priority: .utility) {
+            stopWorker(process)
+            try? FileManager.default.removeItem(at: workspace)
+        }
     }
 
     private static func runWorker(
@@ -443,11 +448,16 @@ enum UsageScriptRunner {
     private static func stopWorker(_ process: Process) {
         guard process.isRunning else { return }
         process.terminate()
-        usleep(50_000)
+
+        for _ in 0..<20 where process.isRunning {
+            usleep(10_000)
+        }
         if process.isRunning {
             kill(process.processIdentifier, SIGKILL)
         }
-        process.waitUntilExit()
+        for _ in 0..<20 where process.isRunning {
+            usleep(10_000)
+        }
     }
 
     private static func residentMemorySize(of process: Process) -> UInt64? {

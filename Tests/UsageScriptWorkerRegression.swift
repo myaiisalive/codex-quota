@@ -15,6 +15,7 @@ struct CCSwitchProvider {
 
 @main
 struct UsageScriptWorkerRegression {
+    @MainActor
     static func main() async throws {
         if UsageScriptRunner.runWorkerIfRequested() {
             return
@@ -60,6 +61,16 @@ struct UsageScriptWorkerRegression {
         try require(
             statefulResult.headers["X-Marker"] == statefulResult.result["planName"] as? String,
             "请求和提取阶段没有保留同一个脚本上下文"
+        )
+
+        let secondSessionStartedAt = Date()
+        _ = try await UsageScriptRunner.evaluateSessionForTesting(
+            script: script,
+            responseJSON: "{\"balance\":8.5}"
+        )
+        try require(
+            Date().timeIntervalSince(secondSessionStartedAt) < 2,
+            "主线程清理工作进程后无法继续刷新"
         )
 
         let startedAt = Date()

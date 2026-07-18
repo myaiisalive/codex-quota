@@ -110,7 +110,8 @@ enum UsageScriptRunner {
                 for: req,
                 maxBytes: networkResponseLimit,
                 resourceTimeout: networkTimeout > 0 ? networkTimeout + 5 : 60,
-                cachePolicy: .useProtocolCachePolicy,
+                // 余额会实时变化，不能复用系统缓存中的旧响应。
+                cachePolicy: .reloadIgnoringLocalCacheData,
                 usesSharedCookies: true
             )
         } catch BoundedURLLoader.LoadError.responseTooLarge {

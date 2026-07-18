@@ -35,6 +35,7 @@ final class QuotaStore: ObservableObject {
     private var officialReloadPending = false
     private var apiBalanceReloadTask: Task<Void, Never>?
     private var apiBalanceReloadPending = false
+    private var displayedApiBalanceConfig: CodexConfig?
     private var displayedOfficialSnapshotSourceID: String?
     private var codexTaskReloadTask: Task<Void, Never>?
     private var codexTaskReloadPending = false
@@ -200,6 +201,7 @@ final class QuotaStore: ObservableObject {
         guard let (codex, provider) = result else {
             thirdPartyApiOnly = false
             currentThirdPartySourceID = nil
+            displayedApiBalanceConfig = nil
             refreshCurrentSourceSelection()
             refreshInactiveThirdPartySources(excluding: nil)
             apiBalance = nil
@@ -210,6 +212,7 @@ final class QuotaStore: ObservableObject {
         thirdPartyApiOnly = codex.isThirdPartyApiMode
         guard let provider else {
             currentThirdPartySourceID = nil
+            displayedApiBalanceConfig = nil
             refreshCurrentSourceSelection()
             refreshInactiveThirdPartySources(excluding: nil)
             apiBalance = nil
@@ -217,6 +220,11 @@ final class QuotaStore: ObservableObject {
             return
         }
 
+        // 配置或 Key 已变化时，不能把上一张卡的余额继续显示在当前卡名下。
+        if displayedApiBalanceConfig != codex {
+            apiBalance = nil
+            apiBalanceError = nil
+        }
         recordThirdPartySource(provider: provider, balance: nil)
         refreshCurrentSourceSelection()
         refreshInactiveThirdPartySources(excluding: currentThirdPartySourceID)
@@ -226,8 +234,13 @@ final class QuotaStore: ObservableObject {
                 provider: provider,
                 codexApiKey: codex.apiKey.isEmpty ? nil : codex.apiKey
             )
+            guard await isCurrentThirdPartySelection(codex: codex, providerRowID: provider.rowID) else {
+                apiBalanceReloadPending = true
+                return
+            }
             recordThirdPartySource(provider: provider, balance: balance)
             refreshCurrentSourceSelection()
+            displayedApiBalanceConfig = codex
             if balance.isValid {
                 apiBalance = balance
                 apiBalanceError = nil
@@ -236,10 +249,26 @@ final class QuotaStore: ObservableObject {
                 apiBalanceError = balance.invalidMessage ?? "余额查询失败"
             }
         } catch {
+            guard await isCurrentThirdPartySelection(codex: codex, providerRowID: provider.rowID) else {
+                apiBalanceReloadPending = true
+                return
+            }
             refreshCurrentSourceSelection()
+            displayedApiBalanceConfig = codex
             apiBalance = nil
             apiBalanceError = "余额查询失败：\(error)"
         }
+    }
+
+    private func isCurrentThirdPartySelection(codex: CodexConfig, providerRowID: Int64) async -> Bool {
+        await Task.detached(priority: .utility) {
+            guard let currentConfig = CodexConfig.loadActive(),
+                  currentConfig == codex,
+                  let currentProvider = CCSwitchProvider.find(for: currentConfig) else {
+                return false
+            }
+            return currentProvider.rowID == providerRowID
+        }.value
     }
 
     private var lastBuiltInterval: Double = 0
